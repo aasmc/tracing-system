@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: tc-schema-migrator
+  main:
+    web-application-type: none
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+    default-schema: tc
+    liquibase-schema: tc             # databasechangelog / databasechangeloglock live in tc (schema pre-created by IaC)
+    analytics-enabled: false         # Liquibase 5 sends anonymous usage analytics unless disabled
+    parameters:
+      fullDays: ${tc.retention.full-days}
+      digestDays: ${tc.retention.digest-days}
+  datasource:
+    url: jdbc:postgresql://tc-pg-primary:5432/tracing
+    username: tc_migrator
+    password: ${TC_MIGRATOR_PASSWORD:}
+    hikari:
+      maximum-pool-size: 2
+      connection-init-sql: SET ROLE tc_owner   # every object is owned by tc_owner (04 §4)
+tc:
+  migrator:
+    ensure-partitions: true
+  retention:                   # seed values only (changelog 005); at runtime use PUT /retention-policies/tiers
+    full-days: 7
+    digest-days: 90

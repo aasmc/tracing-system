@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>ru.aasmc</groupId>
+        <artifactId>trace-collector</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tc-domain</artifactId>
+    <name>tc-domain</name>
+    <description>Framework-free domain model: value objects, aggregates, policies, state machines (05)</description>
+
+    <!-- No Spring, JDBC, Kafka or Jackson dependency (pure-Java libraries such as RE2/J are allowed): enforced by DomainArchitectureTest (09 §0.3 T12).
+         Domain tests are plain JUnit 5 (*Test, surefire): no Spring context, no containers (09 §0.3 T1). -->
+    <dependencies>
+        <!-- pure-Java, linear-time regular expressions for REGEX_EXTRACT transforms (03 §5.4 V9) -->
+        <dependency>
+            <groupId>com.google.re2j</groupId>
+            <artifactId>re2j</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

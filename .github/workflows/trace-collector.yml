@@ -1,0 +1,36 @@
+# CI for the Trace Collector System reactor (09 item 0-5). Runs on a Docker-capable runner;
+# Testcontainers' Ryuk is enabled (default) and container reuse is never enabled in CI.
+name: trace-collector
+
+on:
+  push:
+    paths: ['pom.xml', 'tc-*/**', '.github/workflows/trace-collector.yml']
+  pull_request:
+    paths: ['pom.xml', 'tc-*/**', '.github/workflows/trace-collector.yml']
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Pre-pull test images
+        run: |
+          docker pull postgres:18.7
+          docker pull apache/kafka:4.2.2
+      - name: Build and test (surefire *Test, failsafe *IT, Spotless, JaCoCo)
+        run: mvn -B -ntp verify
+      - name: Test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            tc-*/target/surefire-reports/
+            tc-*/target/failsafe-reports/
+            tc-*/target/site/jacoco/

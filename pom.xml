@@ -1,0 +1,307 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Trace Collector System (TCS) reactor. Design: agent/01..08, implementation plan: agent/09.
+      The sibling projects otlp-kafka-export-tracing-starter/ and opentelemetry-demo/ are independent
+      Maven projects and are deliberately NOT modules of this reactor.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.3</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>ru.aasmc</groupId>
+    <artifactId>trace-collector</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>trace-collector</name>
+    <description>Trace Collector System: collects, stores and enriches traces exported to Kafka</description>
+
+    <modules>
+        <!-- shared libraries -->
+        <module>tc-domain</module>
+        <module>tc-schema-changelog</module>
+        <module>tc-persistence</module>
+        <module>tc-kafka-support</module>
+        <!-- test infrastructure (test scope only) -->
+        <module>tc-test-infra</module>
+        <!-- deployables -->
+        <module>tc-schema-migrator</module>
+        <module>tc-ingester</module>
+        <module>tc-enricher</module>
+        <module>tc-maintenance</module>
+        <module>tc-query-api</module>
+        <module>tc-control-plane</module>
+    </modules>
+
+    <properties>
+        <java.version>25</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- not managed by Spring Boot 4.1.3 (Boot manages Testcontainers 2.0.5, Liquibase 5.0.4,
+             Awaitility 4.3.0, Caffeine 3.2.4, AssertJ, JUnit Jupiter 6) -->
+        <shedlock.version>7.11.0</shedlock.version>
+        <zero-allocation-hashing.version>0.27ea1</zero-allocation-hashing.version>
+        <re2j.version>1.8</re2j.version>
+        <springdoc.version>3.0.3</springdoc.version>
+        <archunit.version>1.4.1</archunit.version>
+        <wiremock.version>3.13.2</wiremock.version>
+        <spotless.version>3.12.0</spotless.version>
+
+        <!-- container images used by tests (spike 0-6, 0-10) -->
+        <tc.image.postgres>postgres:18.7</tc.image.postgres>
+        <tc.image.kafka>apache/kafka:4.2.2</tc.image.kafka>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- reactor modules -->
+            <dependency>
+                <groupId>ru.aasmc</groupId>
+                <artifactId>tc-domain</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>ru.aasmc</groupId>
+                <artifactId>tc-domain</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+            </dependency>
+            <dependency>
+                <groupId>ru.aasmc</groupId>
+                <artifactId>tc-schema-changelog</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>ru.aasmc</groupId>
+                <artifactId>tc-persistence</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>ru.aasmc</groupId>
+                <artifactId>tc-persistence</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+            </dependency>
+            <dependency>
+                <groupId>ru.aasmc</groupId>
+                <artifactId>tc-kafka-support</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>ru.aasmc</groupId>
+                <artifactId>tc-test-infra</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- third party -->
+            <dependency>
+                <groupId>net.javacrumbs.shedlock</groupId>
+                <artifactId>shedlock-spring</artifactId>
+                <version>${shedlock.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>net.javacrumbs.shedlock</groupId>
+                <artifactId>shedlock-provider-jdbc-template</artifactId>
+                <version>${shedlock.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>net.openhft</groupId>
+                <artifactId>zero-allocation-hashing</artifactId>
+                <version>${zero-allocation-hashing.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.re2j</groupId>
+                <artifactId>re2j</artifactId>
+                <version>${re2j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit-junit5</artifactId>
+                <version>${archunit.version}</version>
+            </dependency>
+            <!-- standalone (shaded) WireMock: its Jetty 11 and Jackson 2 are relocated, so they cannot clash
+                 with Boot 4's Jetty 12 / Jackson 3 dependency management (spike 0-8) -->
+            <dependency>
+                <groupId>org.wiremock</groupId>
+                <artifactId>wiremock-standalone</artifactId>
+                <version>${wiremock.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <configuration>
+                        <release>${java.version}</release>
+                        <parameters>true</parameters>
+                        <compilerArgs>
+                            <!-- -processing/-classfile/-options are noise from annotation processors and
+                                 dependencies compiled for other targets; everything else fails the build -->
+                            <arg>-Xlint:all,-processing,-classfile,-options,-serial</arg>
+                            <arg>-Werror</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <!-- domain tests (*Test): plain JUnit 5, no Spring context, no containers (09 §0.3 T1, T11) -->
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <includes>
+                            <include>**/*Test.java</include>
+                        </includes>
+                        <excludes>
+                            <exclude>**/*IT.java</exclude>
+                        </excludes>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <!-- integration tests (*IT): full Spring Boot context + Testcontainers + WireMock -->
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <configuration>
+                        <includes>
+                            <include>**/*IT.java</include>
+                        </includes>
+                        <systemPropertyVariables>
+                            <tc.image.postgres>${tc.image.postgres}</tc.image.postgres>
+                            <tc.image.kafka>${tc.image.kafka}</tc.image.kafka>
+                        </systemPropertyVariables>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>integration-test</goal>
+                                <goal>verify</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <executions>
+                        <execution>
+                            <!-- test model is reused by higher layers (09 §0.1 step b, item 0-3) -->
+                            <id>test-jar</id>
+                            <goals>
+                                <goal>test-jar</goal>
+                            </goals>
+                            <configuration>
+                                <skipIfEmpty>true</skipIfEmpty>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <configuration>
+                        <!-- keep the plain jar as the main artifact so reactor modules can depend on it;
+                             the executable jar is attached with the "exec" classifier -->
+                        <classifier>exec</classifier>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>com.diffplug.spotless</groupId>
+                    <artifactId>spotless-maven-plugin</artifactId>
+                    <version>${spotless.version}</version>
+                    <configuration>
+                        <java>
+                            <palantirJavaFormat/>
+                            <removeUnusedImports/>
+                            <importOrder/>
+                        </java>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.16</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>prepare-agent-integration</id>
+                        <goals>
+                            <goal>prepare-agent-integration</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <!-- merged unit + integration report per module (09 §0.4) -->
+                        <id>merge</id>
+                        <phase>post-integration-test</phase>
+                        <goals>
+                            <goal>merge</goal>
+                        </goals>
+                        <configuration>
+                            <fileSets>
+                                <fileSet>
+                                    <directory>${project.build.directory}</directory>
+                                    <includes>
+                                        <include>jacoco.exec</include>
+                                        <include>jacoco-it.exec</include>
+                                    </includes>
+                                </fileSet>
+                            </fileSets>
+                            <destFile>${project.build.directory}/jacoco-merged.exec</destFile>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                        <configuration>
+                            <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <phase>verify</phase>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

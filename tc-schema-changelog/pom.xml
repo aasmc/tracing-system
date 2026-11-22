@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>ru.aasmc</groupId>
+        <artifactId>trace-collector</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tc-schema-changelog</artifactId>
+    <name>tc-schema-changelog</name>
+    <description>
+        Resources only: the Liquibase changelogs of schema tc (04 §4). Packaged by tc-schema-migrator and put on
+        the test classpath by tc-test-infra (LiquibaseMigrations). A separate module avoids the dependency cycle
+        tc-persistence (tests) -> tc-schema-migrator -> tc-persistence.
+    </description>
+</project>

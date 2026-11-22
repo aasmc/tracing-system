@@ -1,0 +1,12 @@
+# Independent sibling projects (not reactor modules; opentelemetry-demo has its own git repository)
+/opentelemetry-demo/
+/otlp-kafka-export-tracing-starter/
+
+# Build output
+target/
+
+# IDE and OS files
+.idea/
+*.iml
+.vscode/
+.DS_Store

@@ -1,0 +1,3 @@
+spring:
+  liquibase:
+    enabled: false   # the schema is built once per JVM by LiquibaseMigrations (09 §1.3)

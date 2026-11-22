@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: tc-control-plane
+  liquibase:
+    enabled: false   # services never run Liquibase (03 §7.2 rule 4)
