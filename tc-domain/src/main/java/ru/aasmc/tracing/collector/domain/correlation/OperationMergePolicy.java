@@ -6,7 +6,7 @@ import java.util.Comparator;
 import ru.aasmc.tracing.collector.domain.Limits;
 
 /**
- * Rules for linking traces into operations.
+ * The rules {@link OperationLinker} follows when it joins traces to operations and merges operations.
  *
  * <ul>
  *   <li><b>Survivor</b>: when two operations merge, the one with a display value wins over a provisional one, then

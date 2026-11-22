@@ -82,7 +82,7 @@ PG 18 and 17 features this design relies on:
    - counters are incremented only from `RETURNING` sets.
 9. **All timestamps in UTC.** The database runs with `timezone = 'UTC'`. Partition bounds, `trace_day` and partition names are all UTC.
 10. **Two-tier retention (ADR-13).**
-    - **FULL tier:** `span`, `trace_attribute`, `span_link`, `trace_summary`, `trace_enrichment`, `trace_correlation`, `correlation_value` and `business_operation` keep full detail for `fullDays` = n (default 7, minimum 2).
+    - **FULL tier:** `span`, `trace_attribute`, `span_link`, `trace_summary`, `trace_enrichment`, `trace_correlation`, `correlation_value` and `business_operation` keep full detail for `fullDataDays` = n (default 7, minimum 2).
     - **DIGEST tier:** `trace_digest` (one row per trace) and `business_operation_digest` (one row per business operation) keep a compact digest for another `digestDays` = m (default 90). A digest partition is dropped when its day is older than n + m (default 97 days).
     - The tier of every table and its retention live in `retention_policy.tier` / `retention_policy.retention`.
     - `DigestCompactor` in tc-maintenance builds the digest from `trace_summary`, `trace_attribute` (retained keys only) and the correlation tables, **never from `span`** (§6.8).
@@ -177,7 +177,7 @@ Rules:
 - **Applied changesets are immutable.** Liquibase stores an MD5 checksum per changeset in `databasechangelog` and fails validation if an applied changeset changes. Fixes go into a new changeset. The only exception is `004-grants.sql`, marked `runOnChange:true`.
 - **Functions and `DO` blocks** (`$$ … $$` bodies with inner semicolons) use `splitStatements:false`.
 - **Non-transactional statements** (`CREATE INDEX CONCURRENTLY`, `DETACH PARTITION … CONCURRENTLY`) go into their own changeset with `runInTransaction:false` (§4.6).
-- **Changelog parameters** `${fullDays}` and `${digestDays}` are substituted by Liquibase from `spring.liquibase.parameters.*` (§4.7). No other `${…}` sequences may appear in the SQL.
+- **Changelog parameters** `${fullDataDays}` and `${digestDays}` are substituted by Liquibase from `spring.liquibase.parameters.*` (§4.7). No other `${…}` sequences may appear in the SQL.
 - **Rollback** comments are written for DDL changesets of configuration tables. Data tables are expand-only and are never rolled back by Liquibase.
 - **Schema version check.** Each release declares the id of its last required changeset (for example `005-40-grants-digest`). The services' `SchemaVersionGuard` checks that this id is present in `tc.databasechangelog` (03 §7.2). No database tags are needed.
 
@@ -664,7 +664,7 @@ Partitions created after the parent index exists receive the index automatically
 
 Changelog 005 consists of regular transactional changesets. Every `ALTER TABLE … ADD COLUMN` below has a constant default, so it is a catalogue-only change, and the altered tables are tiny configuration tables. The new partitioned parents are empty, so their parent-level indexes are created directly (no §4.6 procedure is needed).
 
-`${fullDays}` and `${digestDays}` are Liquibase changelog parameters (`spring.liquibase.parameters.fullDays` / `digestDays`). tc-schema-migrator fills them from `tc.retention.full-days` (default 7) and `tc.retention.digest-days` (default 90). They are used **only by this seed**. Afterwards the values are owned by `retention_policy` and changed through `PUT /api/v1/admin/retention-policies/tiers`.
+`${fullDataDays}` and `${digestDays}` are Liquibase changelog parameters (`spring.liquibase.parameters.fullDataDays` / `digestDays`). tc-schema-migrator fills them from `tc.retention.full-days` (default 7) and `tc.retention.digest-days` (default 90). They are used **only by this seed**. Afterwards the values are owned by `retention_policy` and changed through `PUT /api/v1/admin/retention-policies/tiers`.
 
 ```sql
 --liquibase formatted sql
@@ -818,11 +818,11 @@ $$;
 -- Seed: retention tiers (replaces the 003 values) and the default exclusion
 ------------------------------------------------------------------------
 UPDATE tc.retention_policy
-SET retention = make_interval(days => ${fullDays}), tier = 'FULL';        -- all 7 existing rows
+SET retention = make_interval(days => ${fullDataDays}), tier = 'FULL';        -- all 7 existing rows
 
 INSERT INTO tc.retention_policy (table_name, retention, partition_granularity, precreate, tier) VALUES
-    ('trace_digest',              make_interval(days => ${fullDays} + ${digestDays}), 'DAY', interval '3 days', 'DIGEST'),
-    ('business_operation_digest', make_interval(days => ${fullDays} + ${digestDays}), 'DAY', interval '3 days', 'DIGEST');
+    ('trace_digest',              make_interval(days => ${fullDataDays} + ${digestDays}), 'DAY', interval '3 days', 'DIGEST'),
+    ('business_operation_digest', make_interval(days => ${fullDataDays} + ${digestDays}), 'DAY', interval '3 days', 'DIGEST');
 
 INSERT INTO tc.compaction_exclusion (service_name, root_name_pattern, description, created_by)
 VALUES (NULL, 'GET /actuator/%', 'Spring Boot actuator probes (health, metrics)', 'system');
@@ -854,7 +854,7 @@ GRANT EXECUTE ON FUNCTION tc.operation_root(uuid) TO tc_query;            -- rea
 | `trace_digest` | DIGEST | 97 d | DAY | filled at about day n + 1, dropped at n + m |
 | `business_operation_digest` | DIGEST | 97 d | DAY | filled at about day n + 2, dropped at n + m |
 
-The control plane keeps the two tiers consistent. `PUT /api/v1/admin/retention-policies/tiers` with `{"fullDays":7,"digestDays":90}` sets `retention = fullDays` on every FULL row and `retention = fullDays + digestDays` on every DIGEST row, in one transaction with the `config_revision` bump. It validates `fullDays ≥ 2`, `fullDays > ceil(max(business_operation_definition.merge_window))` in days, and `digestDays ≥ 0`. `digestDays = 0` disables the DIGEST tier: DigestCompactor stops and the drop gate is skipped.
+The control plane keeps the two tiers consistent. `PUT /api/v1/admin/retention-policies/tiers` with `{"fullDataDays":7,"digestDays":90}` sets `retention = fullDataDays` on every FULL row and `retention = fullDataDays + digestDays` on every DIGEST row, in one transaction with the `config_revision` bump. It validates `fullDataDays ≥ 2`, `fullDataDays > ceil(max(business_operation_definition.merge_window))` in days, and `digestDays ≥ 0`. `digestDays = 0` disables the DIGEST tier: DigestCompactor stops and the drop gate is skipped.
 
 ---
 ## 5. Data encoding: from `TraceMessage` v1 to rows
@@ -1265,7 +1265,7 @@ The fix:
 1. The ingester and enricher roles have `transaction_timeout = 120s` (PG 17+).
 2. The resolver keeps the persisted watermark `correlation_resolver_state.last_processed_id` at the highest id read in a run that started at least `transaction_timeout + 30 s` ago.
 3. Every run therefore re-reads up to about 2.5 minutes of rows. That is about 75,000 rows at M, a cheap index range scan.
-4. Union-find processing is idempotent, so re-reading is harmless.
+4. Linking is idempotent, so re-reading is harmless.
 
 ```sql
 -- R1: new input (scans the (id) index of each retained daily partition; empty ranges cost one descent each)
@@ -1292,12 +1292,12 @@ WHERE (cv.operation_definition_id, cv.value) IN (SELECT * FROM unnest($types::in
 
 **Linking in memory, per business operation definition** (`OperationLinker`, a stateless domain service):
 - The traces of the batch are linked one at a time, in the order of their earliest new observation, exactly as if each came in a run of its own.
-- A value keeps its operation (from R3) if the trace carried it within the operation's merge window. Outside the window the value is treated as reused and starts a new operation, unless the trace already carried it in an earlier run (from R2): then it was reused since and is left out. This handles session or code reuse.
+- A value can join its operation (from R3) if the trace carried it within the operation's merge window. Outside the window the value was recycled and is treated like a new value, unless the trace already carried it in an earlier run (from R2): then a newer operation has taken it over and it is left out. This handles session or code reuse.
 - For each trace:
   - **no operation:** create one;
   - **one operation:** attach to it;
-  - **several operations:** keep the survivor (named first, then earliest `first_seen`, then smallest id), and set `merged_into = survivor` on the others (UC-10), unless the merged operation would exceed the configured size limit.
-- `trace_count` grows by 1 per trace that was not yet attached through any pre-existing value. A replay therefore does not inflate it.
+  - **several operations:** keep the survivor (named first, then earliest `first_seen`, then smallest id), and set `merged_into = survivor` on the others (UC-10), unless the merged operation would exceed the configured size limit: then nothing is merged and each of the operations counts the trace.
+- `trace_count` counts each trace once: an operation that already holds one of the trace's earlier values counts it already. A replay therefore does not inflate it.
 
 All writes go in one transaction. `SELECT … FOR UPDATE` on the state row serialises a second leader if ShedLock leases overlap:
 
@@ -1473,7 +1473,7 @@ Notes on DC1:
 - **Exclusions.** A trace is excluded only if its root span name matches a `compaction_exclusion` row **and** it belongs to no business operation. Traces whose root name overflowed (`root_name_id` NULL) are never excluded.
 - **Idempotency.** `ON CONFLICT (trace_id, trace_day) DO NOTHING` together with the guarded progress update makes a re-run of a chunk harmless. That covers a crash between COMMIT and the next chunk, and two leaders. A retained key that is added later is **not retroactive**, because existing digest rows are never rewritten.
 
-**Phase 2: business operations.** An operation is digested once (a) `merged_into IS NULL` (losers are never digested separately), (b) `last_seen < now() − n days`, and (c) phase 1 is complete for every day in `[date(first_seen), date(last_seen) + 1]`. Because `fullDays > merge_window` (validated), such an operation is closed: no new trace can join it.
+**Phase 2: business operations.** An operation is digested once (a) `merged_into IS NULL` (losers are never digested separately), (b) `last_seen < now() − n days`, and (c) phase 1 is complete for every day in `[date(first_seen), date(last_seen) + 1]`. Because `fullDataDays > merge_window` (validated), such an operation is closed: no new trace can join it.
 
 Candidates come from the digests of D − 1 and D, through the partial index `trace_digest_operation_idx`. A daily **sweep** (BO0) catches operations that no trace digest references, for example a trace that belongs to two operations, or a late enrichment that moved `last_seen`. The sweep also feeds the `business_operation` drop gate (§8.7).
 
@@ -1513,7 +1513,7 @@ WHERE bo.merged_into IS NULL
       = ((bo.last_seen AT TIME ZONE 'UTC')::date + 1) - (bo.first_seen AT TIME ZONE 'UTC')::date + 1;
 ```
 
-Java processes the eligible ids in batches of up to 2 000 operations, one transaction per batch. Each batch runs BO2 (SQL, read), then the `OutcomeEvaluator` (Java), then BO3 (SQL, write).
+Java processes the eligible ids in batches of up to 2 000 operations, one transaction per batch. Each batch runs BO2 (SQL, read), then `OutcomeRule.evaluate` (Java), then BO3 (SQL, write).
 
 ```sql
 -- BO2: per operation: members, steps, attribute union and the inputs of the outcome rule
@@ -1589,7 +1589,7 @@ GROUP BY o.id, o.first_seen, o.last_seen, o.operation_definition_id, o.display_v
          oi.outcome_values, au.attributes;
 ```
 
-**`OutcomeEvaluator` (Java, ADR-13 §3).** The order of evaluation is fixed:
+**`OutcomeRule.evaluate` (Java, ADR-13 §3).** The order of evaluation is fixed:
 
 ```
 rule = outcome_rule (may be null)
@@ -1605,7 +1605,7 @@ rule = outcome_rule (may be null)
 OperationOutcome codes: 0 UNKNOWN, 1 SUCCESS, 2 FAILED, 3 INCOMPLETE
 ```
 
-The outcome value is read from `trace_digest.attributes`. The FULL-tier `trace_attribute` rows of the earliest members may already be dropped when the operation closes. Therefore saving an `outcome_rule` with an `outcomeKey` makes the control plane flag that key `retain_in_digest = true` with `digest_transform = 'NONE'`, in addition to the ADR-13 rule that the key must be indexed. The same `OutcomeEvaluator` computes the on-the-fly outcome of FULL-tier operations in the API (§7.9).
+The outcome value is read from `trace_digest.attributes`. The FULL-tier `trace_attribute` rows of the earliest members may already be dropped when the operation closes. Therefore saving an `outcome_rule` with an `outcomeKey` makes the control plane flag that key `retain_in_digest = true` with `digest_transform = 'NONE'`, in addition to the ADR-13 rule that the key must be indexed. The same `OutcomeRule.evaluate` computes the on-the-fly outcome of FULL-tier operations in the API (§7.9).
 
 ```sql
 -- BO3: write (same transaction as BO2), then account for the day
@@ -2041,7 +2041,7 @@ For non-selective documents such as `client_id = bookstore-web`, the planner ins
 ### 7.9 Business operations across tiers (UC-14, UC-22)
 
 **`GET /business-operations/{id}`.**
-1. Resolve the id in the FULL tier with `tc.operation_root($id)` and §7.5. If found, return the live timeline. Its `outcome` is computed on the fly by the same `OutcomeEvaluator` as compaction (§6.8), from the timeline's traces and the FULL-tier attribute values of `outcomeKey`.
+1. Resolve the id in the FULL tier with `tc.operation_root($id)` and §7.5. If found, return the live timeline. Its `outcome` is computed on the fly by the same `OutcomeRule.evaluate` as compaction (§6.8), from the timeline's traces and the FULL-tier attribute values of `outcomeKey`.
 2. Otherwise probe the digest:
    ```sql
    SELECT operation_id, op_day, first_seen, last_seen, operation_definition_id, display_value, trace_count,
@@ -2081,7 +2081,7 @@ ORDER BY first_seen DESC, operation_id DESC
 LIMIT $limit + 1;
 ```
 
-- **Outcome filter on the FULL part.** FULL-tier operations have no stored outcome. The filter is applied after the `OutcomeEvaluator` has computed each candidate's outcome. The FULL part covers at most the last n + 1 days and one type, and evaluation is bounded at `limit × 5` candidates per page. When that bound is hit, the response reports `"partial": true`.
+- **Outcome filter on the FULL part.** FULL-tier operations have no stored outcome. The filter is applied after `OutcomeRule.evaluate` has computed each candidate's outcome. The FULL part covers at most the last n + 1 days and one type, and evaluation is bounded at `limit × 5` candidates per page. When that bound is hit, the response reports `"partial": true`.
 - **Pagination.** The two tiers are merged by `(first_seen DESC, operation_id DESC)` with the same keyset rule as §7.8. Each item carries `"tier"`.
 
 ---
@@ -2763,7 +2763,7 @@ Any role can change `statement_timeout` for its own session, so it is a default 
 4. A 6 h replay, after which counters must be unchanged.
 5. A Patroni switchover under load.
 6. A 24 h soak with partition rotation and drops.
-7. **Compaction (ADR-13).** Run with `fullDays = 2` and `digestDays = 3`, for 5 days at 1× M. A compressed-time variant shifts the amplifier timestamps back by n days into pre-created partitions, with a test build that disables the too-old guard. Cover:
+7. **Compaction (ADR-13).** Run with `fullDataDays = 2` and `digestDays = 3`, for 5 days at 1× M. A compressed-time variant shifts the amplifier timestamps back by n days into pre-created partitions, with a test build that disables the too-old guard. Cover:
    - steady-state compaction and the drop gate;
    - a forced compaction failure: FULL-tier partitions must be kept, lag must alert, and nothing uncompacted may be dropped;
    - a kill of the leader during a chunk: it resumes from `last_chunk_end` with no duplicates;
@@ -3097,7 +3097,7 @@ All deviations are additive or clarifying. No table or column defined in the bri
 13. **Capacity.** The refined arithmetic gives 13.8 KB/trace (≈ 23.5 TB/node at M) uncompressed, or 11.0 KB/trace (≈ 19.2 TB) with inline lz4. The brief assumed 12.4 KB/trace and about 19 TB. Under ADR-13 (item 15) this becomes 19.7 TB or 17.3 TB, and the recommendation is 20 TB per node at M.
 14. **Brute-force window.** The API maximum stays at 1 h. The UI defaults to 15 min at M and 5 min at L, because one hourly partition is about 35 GB at M.
 15. **ADR-13 two-tier retention (requested by the user).** This changes the brief's retentions of 14, 30 and 90 days.
-    - **FULL tier:** every existing data table is kept n = 7 days (`fullDays`, minimum 2).
+    - **FULL tier:** every existing data table is kept n = 7 days (`fullDataDays`, minimum 2).
     - **DIGEST tier:** `trace_digest` and `business_operation_digest` are kept until n + m = 97 days (`digestDays` = 90). `retention_policy` stores the *total* age n + m in DIGEST rows and n in FULL rows.
     - **Changelog `005-two-tier-retention.sql`** (§4.7) adds:
       - columns `indexed_attribute.retain_in_digest` and `digest_transform`;

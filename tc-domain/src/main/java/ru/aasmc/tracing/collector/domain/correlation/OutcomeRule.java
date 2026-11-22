@@ -29,9 +29,9 @@ import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
  *
  * <p>Example with {@code finalStepLabel = token-exchange}: a login whose traces include one carrying the
  * authorization code (step {@code token-exchange}) and no errors is SUCCESS; a login with only the password check
- * (step {@code authentication}) is INCOMPLETE; any error makes it FAILED. A trace performs the step labels of the keys
- * it carries. The outcome is stored in the long-term digest of the operation, so it is still known after the traces
- * are deleted.
+ * (step {@code authentication}) is INCOMPLETE; any error makes it FAILED. A trace's steps are the step labels of the
+ * correlation keys it carries: a trace carrying the authorization code took part in step {@code token-exchange}. The
+ * outcome is stored in the long-term digest of the operation, so it is still known after the traces are deleted.
  *
  * <p>Rules ({@code INVALID_OUTCOME_RULE}): {@code null} value sets become empty; values are not blank; the sets do not
  * overlap; values need an {@code outcomeKey}; {@code finalStepLabel} is {@code null} or not blank. The number and
@@ -76,18 +76,19 @@ public record OutcomeRule(
     }
 
     /**
-     * Evaluates the first rule that applies:
+     * Decides the outcome from the operation's traces with the first rule that applies:
      *
      * <ol>
      *   <li>if some trace has a value of {@code outcomeKey}, the latest such trace (by start, then larger trace id)
      *       decides: SUCCESS or FAILED if the value is in a set, else UNKNOWN; that value is the deciding value;
      *   <li>if any trace has an error: FAILED;
-     *   <li>if there is a {@code finalStepLabel}: SUCCESS if some trace carries it, else INCOMPLETE;
+     *   <li>if there is a {@code finalStepLabel}: SUCCESS if some trace took part in that step, else INCOMPLETE;
      *   <li>otherwise SUCCESS.
      * </ol>
      *
      * Without traces the outcome is UNKNOWN.
      *
+     * @param members the traces of the operation
      * @param maxDecidingValueLength the deciding value is cut to this many characters (code points, so a character
      *     outside the Basic Multilingual Plane, such as an emoji, is never split)
      */

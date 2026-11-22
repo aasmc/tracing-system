@@ -6,6 +6,6 @@ public enum ExtractionFailure {
     MISSING_REQUIRED_FIELD,
     /** A transform could not produce a value, e.g. a regular expression did not match. */
     TRANSFORM_FAILED,
-    /** The value does not fit the mapping's type, e.g. {@code "abc"} for LONG or {@code 4.5} for LONG. */
+    /** The value does not convert to the mapping's type, e.g. {@code "abc"} or {@code 4.5} for a LONG mapping. */
     TYPE_MISMATCH
 }

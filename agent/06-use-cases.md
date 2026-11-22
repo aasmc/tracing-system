@@ -26,7 +26,7 @@ Wherever possible, one running example is used throughout: the **IdP login**.
 | Business operation definition `idp.login` | PRIMARY key `idp.auth_session_id` (step label `authentication`); ALIAS key `oauth.authorization_code` (step label `token-exchange`) |
 | Enrichment source `sms-gateway.delivery-reports` | Topic `sms-gateway.delivery-reports` in the client cluster `sms-kafka`. Event `{"messageId":"m-1","status":"DELIVERED","provider":"smsc-1","deliveredAt":"2026-11-21T09:15:32.410Z"}` with header `traceparent: 00-7a3c1e9d2b4f60851c2d3e4f5a6b7c8d-5f3a9b2c1d0e4f68-01`, which yields `sms.delivery.status=DELIVERED` and `sms.provider=smsc-1` |
 | Indexed keys | `user_id`, `client_id`, `auth.factor`, `sms.delivery.status`, plus the built-ins `service.name`, `span.name`, `status` |
-| Retention tiers | `fullDays` = 7, `digestDays` = 90. The full tier of 2026-11-21 is compacted on 2026-11-29 (first tick after 00:00Z); its digest partitions are dropped on 2027-02-27 (age > 97 d) |
+| Retention tiers | `fullDataDays` = 7, `digestDays` = 90. The full tier of 2026-11-21 is compacted on 2026-11-29 (first tick after 00:00Z); its digest partitions are dropped on 2027-02-27 (age > 97 d) |
 | Retained keys (digest) | `user_id` (transform `SHA256`: `u-42` → `16ec525b74b75626eb93ecad8acc749885fcf4e83c95b139342769a4ab1828a3`), `client_id`, `auth.factor`, `sms.delivery.status` (`NONE`), and `idp.auth_session_id` (`NONE`, indexed automatically when flagged, UC-23) |
 | Outcome rule of `idp.login` | `{"finalStepLabel":"token-exchange"}`. Operation `0193a6f2-6c1e-7b3a-9f10-2d4c5e6f7a80` (T1, T2, T3) is digested with outcome `SUCCESS` |
 
@@ -416,7 +416,7 @@ POST /api/v1/admin/enrichment-sources
 
    `filter.equals = null` means "pointer must exist". A non-null value means string equality.
 
-4. `tc-control-plane` validates the `SourceDefinition` invariants:
+4. `tc-control-plane` validates the `EnrichmentSourceDefinition` invariants:
    - 1..64 mappings;
    - unique target keys;
    - SPAN scope requires TRACEPARENT_HEADER;
@@ -693,7 +693,7 @@ POST /api/v1/admin/indexed-attributes
 - **4b. Disable during backfill.** `PATCH /indexed-attributes/{keyId}` with `{"status":"DISABLED"}` (03 §5.3) sets DISABLED. Backfill stops at the next partition boundary.
 - **Cardinality guard.** If more than 5 M distinct values per day are observed for the key (sampled by the ingester), a warning is shown. Indexing user-unique ids is fine; indexing request ids at 1 000/s would create 86 M rows/day.
 - **1e. Retain an already indexed key.** `PATCH /indexed-attributes/{keyId}` with `{"retainInDigest":true,"digestTransform":"SHA256"}` (UC-23). No backfill is needed: compaction reads `trace_attribute`, which already holds the key. Takes effect for trace days not yet DONE (not retroactive).
-- **1f. PERSONAL key retained with `NONE`.** Refused with `400 PII_RETAINED_IN_CLEAR` unless the request sets `acknowledgePii = true` ("the raw value is kept n + m days; consider SHA256"). A SECRET key retained with `NONE` is always refused with `400 SECRET_KEY_REQUIRES_TRANSFORM` (05 §7.3).
+- **1f. PERSONAL key retained with `NONE`.** Refused with `400 PERSONAL_DATA_RETAINED_IN_CLEAR` unless the request sets `acknowledgePii = true` ("the raw value is kept n + m days; consider SHA256"). A SECRET key retained with `NONE` is always refused with `400 SECRET_RETAINED_IN_CLEAR` (05 §7.3).
 - **4c. Disable a retained key.** `DISABLED` also clears `retain_in_digest` (05 §4.9): without `trace_attribute` rows there is nothing to copy. Digest rows already written keep the key until their partition is dropped.
 
 **Postconditions**
@@ -749,7 +749,7 @@ POST /api/v1/admin/business-operation-definitions
    - name pattern;
    - ≥ 1 PRIMARY key;
    - unique keys;
-   - merge window in [1 min, 30 d], and shorter than `fullDays` of the retention tiers (in days, rounded up), otherwise `400 INVALID_MERGE_WINDOW`;
+   - merge window in [1 min, 30 d], and shorter than `fullDataDays` of the retention tiers (in days, rounded up), otherwise `400 INVALID_MERGE_WINDOW`;
    - outcome rule: `finalStepLabel` is the step label of one of the type's keys; `outcomeKey`, if set, is an indexed key; success and failure values are disjoint.
 
    It also checks the hub-risk heuristic: for each key it queries the read replica for the number of distinct traces per value over the last hour (if the key is indexed) and warns if the p99 exceeds 1 000.
@@ -1378,7 +1378,7 @@ GROUP BY value_str ORDER BY n DESC LIMIT 20;
 - **2.4a. DETACH CONCURRENTLY interrupted** (pod killed). The partition stays in "detach pending" state. The next run detects `pg_inherits.inhdetachpending = true` and runs `ALTER TABLE ... DETACH PARTITION ... FINALIZE`.
 - **2.4b. Long-running query on the partition** (e.g. a brute-force search on the replica does not block, but one on the primary would). DETACH CONCURRENTLY waits. `lock_timeout = 60 s`, then retry next hour.
 - **2.3a. Lock contention when creating a partition.** CREATE takes a brief ACCESS EXCLUSIVE lock on the parent. Partitions are created ≥ 3 days ahead, never at the hour boundary, so ingest is never blocked waiting for its partition.
-- **Retention changed via API.** Durations are set per tier with `PUT /api/v1/admin/retention-policies/tiers {"fullDays":7,"digestDays":90}` (UC-23), validated by `RetentionTiers` and `RetentionPolicy.validateSet`. The next run drops more partitions, but only through the drop gate. Shrinking is immediate and irreversible, so the UI shows a confirmation with the estimated freed bytes (`pg_total_relation_size`).
+- **Retention changed via API.** Durations are set per tier with `PUT /api/v1/admin/retention-policies/tiers {"fullDataDays":7,"digestDays":90}` (UC-23), validated by `RetentionTiers` and `RetentionPolicy.validateSet`. The next run drops more partitions, but only through the drop gate. Shrinking is immediate and irreversible, so the UI shows a confirmation with the estimated freed bytes (`pg_total_relation_size`).
 - **2.4c. Compaction lags or failed for a day** (`compaction_state.status` RUNNING or FAILED). The gate keeps every overlapping FULL-tier partition. Disk usage grows by about one day of full-tier data per day of lag (04 §9). Never drop uncompacted data; the operator fixes the compaction (UC-21) instead. In an emergency (disk full) the operator may set `digestDays = 0` (UC-23), which disables the gate and loses the digest of the affected days; this is an audited decision.
 
 **Business rules**
@@ -1533,7 +1533,7 @@ GROUP BY value_str ORDER BY n DESC LIMIT 20;
 - **5a. Search by a PERSONAL key** (`user_id EQ u-42`) without `TC_PII`. Allowed (05 §7.3). The value in `matchedAttributes` is masked. `PREFIX` or `IN` with more than 5 values on PERSONAL keys gives `403 PII_ENUMERATION_FORBIDDEN`.
 - **5b. Admin preview payloads** (UC-04). Masked by the same policy on `tc-control-plane`.
 - **5c. PII in the digest tier (ADR-13).** Retained values live n + m days. The digest stores them after `digest_transform`:
-  - `SHA256` (e.g. `user_id` → `16ec525b…28a3`): the key keeps its `PiiClass`, so the hash is shown only with `TC_PII` and masked as `16**` otherwise. Search `user_id EQ u-42` in the digest tier works: `tc-query-api` hashes `u-42` before matching (UC-22).
+  - `SHA256` (e.g. `user_id` → `16ec525b…28a3`): the key keeps its `Sensitivity`, so the hash is shown only with `TC_PII` and masked as `16**` otherwise. Search `user_id EQ u-42` in the digest tier works: `tc-query-api` hashes `u-42` before matching (UC-22).
   - `MASK` (e.g. `phone` → `+7***`): the stored value is already masked and is returned as is. `EQ`/`IN` on such a key in the digest tier is unsupported and reported as a warning.
   - `NONE`: the raw value is masked on read exactly like full-tier values.
 - **5d. Right to erasure** for a user id retained in the digest. No per-row DELETE exists (BR-16-1); the value ages out at n + m days. A shorter `digestDays` or `SHA256`/`MASK` is the mitigation; this is stated in ADR-13 (02).
@@ -1609,7 +1609,7 @@ GROUP BY value_str ORDER BY n DESC LIMIT 20;
 |---|---|
 | **Primary actor** | Scheduler: `tc-maintenance` DigestCompactor (every 5 min, ShedLock `digest-compactor`) |
 | **Supporting** | PostgreSQL primary (direct DataSource, no PgBouncer); PartitionManager (reads `compaction_state` for the drop gate, UC-16) |
-| **Trigger** | A trace day D becomes eligible: D + 1 day ≤ now − n days (the whole day is older than `fullDays`). Example: D = 2026-11-21 becomes eligible at 2026-11-29T00:00Z with n = 7. |
+| **Trigger** | A trace day D becomes eligible: D + 1 day ≤ now − n days (the whole day is older than `fullDataDays`). Example: D = 2026-11-21 becomes eligible at 2026-11-29T00:00Z with n = 7. |
 | **Preconditions** | 1. `digestDays` > 0. 2. Partitions of `trace_digest` and `business_operation_digest` for D exist (created 3 days ahead, UC-16). 3. The FULL-tier data of D is still present (guaranteed by the drop gate). 4. The retained keys, digest transforms, outcome rules and compaction exclusions are configured (UC-07, UC-08, UC-23). |
 | **Sequence** | [SD-21](07-sequence-diagrams.md#sd-21--uc-21-compaction-of-one-trace-day-into-the-digest-tier) |
 
@@ -1711,14 +1711,14 @@ ON CONFLICT (trace_id, trace_day) DO NOTHING;
 **Alternative and exception flows**
 
 - **1a. `digestDays = 0`.** The job does nothing; the drop gate is skipped (UC-16).
-- **2a. Several days eligible** (after an outage or after `fullDays` was lowered). Days are processed oldest first, one day at a time; the tick continues with the next day while its lock is held (`lockAtMostFor` 60 min, then the next tick resumes).
+- **2a. Several days eligible** (after an outage or after `fullDataDays` was lowered). Days are processed oldest first, one day at a time; the tick continues with the next day while its lock is held (`lockAtMostFor` 60 min, then the next tick resumes).
 - **3a. Chunk fails or times out** (`statement_timeout` 15 min, e.g. an unusually large hour). The transaction rolls back, `status = 'FAILED'`, `error` is set. The next tick retries from `last_chunk_end` (FAILED → RUNNING). After repeated failures `tc_compaction_lag_days` exceeds 1 and alert `TcCompactionLag` fires. The drop gate keeps the data meanwhile.
 - **3b. Leader failover mid-day.** The new leader finds `status = 'RUNNING'` and resumes from `last_chunk_end`. Re-running a partially committed chunk is harmless (`ON CONFLICT DO NOTHING`).
 - **3c. Late value outside the read window** (e.g. an enrichment event that arrived more than 6 h after D ended). Not captured in the digest. Documented limitation.
 - **3d. Split trace** (two `trace_summary` rows on D and D + 1, 05 §3.3). Two `trace_digest` rows are written, one per day; the Query context merges them like summaries.
 - **3e. Excluded trace** (root `GET /actuator/health` of `idp-gateway`, pattern `GET /actuator/%`). Not inserted, counted in `traces_excluded`. If the trace belongs to a business operation it is digested anyway.
 - **3f. Rootless trace** (`root_name_id` NULL). Never matches an exclusion, so it is digested.
-- **6a. Operation still active** (`last_seen ≥ now − n days`, e.g. a value reused within the merge window). It waits for a later tick. Because `fullDays` > merge window (UC-23 validation), the operation can no longer grow once it qualifies.
+- **6a. Operation still active** (`last_seen ≥ now − n days`, e.g. a value reused within the merge window). It waits for a later tick. Because `fullDataDays` > merge window (UC-23 validation), the operation can no longer grow once it qualifies.
 - **6b. A member trace day is not DONE.** The operation waits until it is.
 - **6c. Merged operation** (`merged_into` NOT NULL). Not digested separately; its traces appear in the survivor's steps.
 - **6d. Hub-capped operation.** `steps` keeps the first 500 member traces by start time (as the UC-14 timeline); `trace_count` stays exact.
@@ -1917,7 +1917,7 @@ LIMIT :limit + 1;
 **Business rules**
 
 - BR-22-1: Every trace and operation in a response carries `"tier"`.
-- BR-22-2: Search values for `SHA256` keys are hashed by the API (`DigestTransform.apply`); the stored hash is masked by `PiiClass` like a raw value.
+- BR-22-2: Search values for `SHA256` keys are hashed by the API (`DigestTransform.apply`); the stored hash is masked by `Sensitivity` like a raw value.
 - BR-22-3: The DIGEST tier never answers span-level questions (span tree, events, links, enrichment lineage, brute force).
 
 **NFRs**
@@ -1947,15 +1947,15 @@ PUT /api/v1/admin/retention-policies/tiers
 Content-Type: application/json
 Authorization: Bearer <JWT with TC_ADMIN>
 
-{ "fullDays": 7, "digestDays": 90 }
+{ "fullDataDays": 7, "digestDays": 90 }
 ```
 
-2. `tc-control-plane` validates `RetentionTiers` (05 §4.12): `fullDays ≥ 2`; `fullDays` > the longest `merge_window` of any business operation definition, in days rounded up (`idp.login`: PT24H → 1 d); `digestDays ≥ 0`. In **one transaction** it updates every `retention_policy` row of tier FULL to `retention = 7 days` and every row of tier DIGEST to `retention = 97 days` (n + m), checks `RetentionPolicy.validateSet`, bumps `config_revision`, writes the audit record and emits `RetentionTiersChanged`:
+2. `tc-control-plane` validates `RetentionTiers` (05 §4.12): `fullDataDays ≥ 2`; `fullDataDays` > the longest `merge_window` of any business operation definition, in days rounded up (`idp.login`: PT24H → 1 d); `digestDays ≥ 0`. In **one transaction** it updates every `retention_policy` row of tier FULL to `retention = 7 days` and every row of tier DIGEST to `retention = 97 days` (n + m), checks `RetentionPolicy.validateSet`, bumps `config_revision`, writes the audit record and emits `RetentionTiersChanged`:
 
 ```json
 HTTP/1.1 200 OK
 {
-  "fullDays": 7,
+  "fullDataDays": 7,
   "digestDays": 90,
   "digestDropAgeDays": 97,
   "policies": [
@@ -2020,12 +2020,12 @@ POST /api/v1/admin/compaction-exclusions
 
 **Alternative and exception flows**
 
-- **2a. `fullDays < 2`, `digestDays < 0`, or `fullDays` ≤ the longest merge window in days.** `400` with the violated rule: `FULL_DAYS_TOO_SMALL`, `FULL_DAYS_BELOW_MERGE_WINDOW` or `INVALID_DIGEST_DAYS` (03 §5.9).
-- **2b. Shrinking `fullDays`** (e.g. 7 → 3). The UI asks for confirmation with the estimated freed bytes (UC-16). The days that become eligible are compacted first (oldest first, UC-21 2a); PartitionManager drops their FULL-tier partitions only through the drop gate. Expect a temporary `tc_compaction_lag_days` > 1.
-- **2c. Growing `fullDays`** (e.g. 7 → 14). Not retroactive: dropped data does not return; the FULL tier fills up over the next 7 days. Disk needs per 04 §9.
+- **2a. `fullDataDays < 2`, `digestDays < 0`, or the longest merge window > `fullDataDays` − 1 day.** `400` with the violated rule: `FULL_DATA_DAYS_TOO_SMALL`, `FULL_DATA_DAYS_BELOW_MERGE_WINDOW` or `INVALID_DIGEST_DAYS` (03 §5.9).
+- **2b. Shrinking `fullDataDays`** (e.g. 7 → 3). The UI asks for confirmation with the estimated freed bytes (UC-16). The days that become eligible are compacted first (oldest first, UC-21 2a); PartitionManager drops their FULL-tier partitions only through the drop gate. Expect a temporary `tc_compaction_lag_days` > 1.
+- **2c. Growing `fullDataDays`** (e.g. 7 → 14). Not retroactive: dropped data does not return; the FULL tier fills up over the next 7 days. Disk needs per 04 §9.
 - **2d. `digestDays = 0`.** Confirmation required. Compaction stops, the drop gate is skipped, and existing digest partitions are dropped once older than n days. Audited.
 - **2e. Concurrent change** of the tiers by two admins. The transaction updates all rows under `SELECT ... FOR UPDATE` on `config_revision`; the second request sees the new values and wins last (audited).
-- **3a. SECRET key retained with `NONE`.** `400 SECRET_KEY_REQUIRES_TRANSFORM`. **PERSONAL key with `NONE`**: `400 PII_RETAINED_IN_CLEAR` unless `acknowledgePii = true`.
+- **3a. SECRET key retained with `NONE`.** `400 SECRET_RETAINED_IN_CLEAR`. **PERSONAL key with `NONE`**: `400 PERSONAL_DATA_RETAINED_IN_CLEAR` unless `acknowledgePii = true`.
 - **3b. Transform changed on a retained key** (e.g. `NONE` → `SHA256`). Accepted with a warning: days already compacted keep their old form, so digest search on that key is exact only for days compacted after the change.
 - **3c. Retaining a DISABLED key.** `409`: re-enable it first (UC-07).
 - **5a. Invalid outcome rule.** `400 UNKNOWN_STEP_LABEL` or `400 OUTCOME_KEY_NOT_INDEXED` (UC-08 2c, 2d).

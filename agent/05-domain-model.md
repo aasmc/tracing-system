@@ -22,21 +22,26 @@ This document gives TCS one vocabulary and a model that every service shares. It
 
 Code lives in the shared-kernel module `tc-domain` (base package `ru.aasmc.tracing.collector.domain`). That module is pure Java with no Spring, JDBC or Kafka dependencies. Persistence code (`tc-persistence`) and Kafka code (`tc-kafka-support`) depend on `tc-domain`, never the reverse.
 
-> **Implementation note (2026-11-22).** The `tc-domain` API was built from this document in Phase 1a. Names, invariants that changed (name pattern, mapping count, MASK argument, reserved target keys, `TimeRange`, `SpanEvent` time, index token size, …) and added types are listed in [09 §2.6](09-implementation-plan.md#26-phase-1a-results-2026-11-22). Where the two differ, the code and 09 §2.6 win.
+> **Implementation status (2026-11-22).** Phase 1 built the domain types the first use cases need; their contracts below are summaries of the code, which is the reference (Javadoc in `tc-domain`). Types marked *planned* are still design: they are added by the phase that first needs them, and their code sketches may change then. Deviations from the original design are listed in [09 §2.6](09-implementation-plan.md#26-phase-1a1b-results-revised-2026-11-22).
 
-Package layout of `tc-domain`:
+**Error model.** A broken rule throws `DomainViolationException(ViolationCode, message)`, built with `DomainViolationException.require(condition, code, message)`; the REST layer maps the `ViolationCode` to a stable error code. A broken *configured limit* or a programming error (e.g. a negative count) throws a plain `IllegalArgumentException`. State machines (`SourceStatus`, `IndexStatus`, `DigestStatus`) answer `transitionTo(target)` with the sealed `Transition` (`Changed`, `Unchanged`, `Rejected`); the aggregates throw the rejection.
+
+**Limits are configuration.** Every size, count, length and time limit lives in a limits record with a `DEFAULT` that the application overrides from properties: `AttributeLimits`, `IngestLimits`, `EnrichmentLimits`, `CorrelationLimits`, `OperationMergePolicy`. Records keep only rules that never change (not null, not blank, syntax, ordering); `requireWithin(...)` checks the limits. Only external formats stay fixed (W3C ids and `traceparent`, Kafka topic names, RFC 6901 JSON Pointer, UUIDv7).
+
+Package layout of `tc-domain` (*planned* types in italics):
 
 | Package | Contents |
 |---|---|
-| `domain.trace` | `TraceId`, `SpanId`, `Span`, `TraceFragment`, `TraceSummary`, `TraceDay`, `TimeRange`, `SpanKind`, `SpanStatus`, `TraceFlags`, `SpanFlag`, `Completeness` |
-| `domain.attribute` | `AttributeKey`, `AttributeValue` (sealed), `Attributes`, `AttributeOrigin`, `IndexedAttribute`, `DigestTransform`, `PiiClass` |
-| `domain.resource` | `Resource`, `ResourceId`, `InstrumentationScope`, `ScopeId`, `ServiceId`, `SpanNameId` |
-| `domain.enrichment` | `KafkaConnection`, `EnrichmentSource`, `SourceRevision`, `SourceDefinition`, `TraceContextExtraction` (sealed), `FieldMapping`, `Transform` (sealed), `EnrichmentRecord` |
-| `domain.correlation` | `BusinessOperationDefinition`, `CorrelationKey`, `OutcomeRule`, `CorrelationObservation`, `CorrelationValue`, `BusinessOperation`, `OperationForest` |
-| `domain.config` | `ConfigRevision`, `ConfigSnapshot`, `RetentionPolicy`, `RetentionTier`, `RetentionTiers` |
-| `domain.digest` | `TraceDigest`, `BusinessOperationDigest`, `DigestStep`, `TraceOutcome`, `OperationOutcome`, `CompactionExclusion`, `DigestProgress`, `DigestStatus` (ADR-13, two-tier retention) |
-| `domain.event` | `DomainEvent` (sealed) and its records |
-| `domain.dlq` | `DeadLetterReason`, `DeadLetter` |
+| base | `DomainViolationException`, `DomainViolation`, `ViolationCode`, `Transition`, `Names` (naming rule of admin-created things) |
+| `domain.trace` | `TraceId`, `SpanId`, `Traceparent`, `TraceFlags`, `EpochNanos`, `TimeRange`, `TraceDay`, `Span`, `SpanKind`, `SpanStatus`, `StatusCode`, `SpanEvent`, `SpanLink`, `DroppedCounts`, `SpanFlag`, `TraceSummary`, `RootSpan`, `IngestLimits`, `SpanTimeVerdict`, *`TraceFragment`*, *`KafkaCoordinates`*, *`Completeness`* |
+| `domain.attribute` | `AttributeKey`, `AttributeType`, `AttributeValue` (sealed), `Attributes`, `AttributeLimits`, `TruncatedText`, `IndexedAttribute`, `IndexStatus`, `DigestTransform`, `Sensitivity`, `SensitivityPolicy`, *`AttributeOrigin`* |
+| `domain.resource` | `ResourceHasher`, `ResourceId`, `InstrumentationScopeId`, *`Resource`*, *`InstrumentationScope`*, *`ServiceId`*, *`SpanNameId`* |
+| `domain.enrichment` | `EnrichmentSource`, `EnrichmentSourceId`, `KafkaConnectionId`, `SourceStatus`, `EnrichmentSourceDefinition`, `EnrichmentScope`, `TraceContextSource` (sealed), `TraceContext`, `FieldMapping`, `FieldSource`, `Transform` (sealed), `JsonPointer`, `JsonScalar`, `EnrichmentEvent`, `Extraction` (sealed), `ExtractionFailure`, `EnrichmentLimits`, *`KafkaConnection`*, *`SourceRevision`*, *`EnrichmentRecord`* |
+| `domain.correlation` | `BusinessOperationDefinition`, `CorrelationKey`, `KeyRole`, `CorrelationLimits`, `OutcomeRule`, `MemberTrace`, `OutcomeEvaluation`, `OperationOutcome`, `CorrelationObservation`, `BusinessOperation`, `OperationMergePolicy`, `OperationLinker`, `LinkingInput`, `LinkingResult`, `RefusedMerge` |
+| `domain.config` | `RetentionTiers`, *`RetentionPolicy`*, *`RetentionTier`*, *`ConfigRevision`*, *`ConfigSnapshot`* |
+| `domain.digest` | `DigestProgress`, `DigestStatus`, *`TraceDigest`*, *`BusinessOperationDigest`*, *`DigestStep`*, *`TraceOutcome`*, *`CompactionExclusion`* |
+| *`domain.event`* | *`DomainEvent` (sealed) and its records* |
+| *`domain.dlq`* | *`DeadLetterReason`, `DeadLetter`* |
 
 ---
 
@@ -65,8 +70,8 @@ The terms below are used with exactly these meanings in code, API, UI and docume
 | **Kafka Connection** | How to reach a client's Kafka cluster: bootstrap servers, security protocol and SASL mechanism, plus secret *references* (never the secrets). | `KafkaConnection`; `tc.kafka_connection` |
 | **Enrichment Source** | A client-defined Kafka topic whose events carry trace context. TCS turns those events into additional trace attributes. It is configured as data, not code. | `EnrichmentSource`; `tc.enrichment_source` |
 | **Source Revision** | An immutable, numbered version of a source's definition. Running containers always process exactly one revision. | `SourceRevision`; `tc.enrichment_source_revision` |
-| **Source Definition** | The content of a revision: payload format, trace-context extraction, scope, filter, start position, missing-context policy and field mappings. | `SourceDefinition`; `definition jsonb` |
-| **Trace Context Extraction** | The strategy that finds the trace (and optionally span) id in an enrichment event: `TRACEPARENT_HEADER`, `RAW_HEADER` or `PAYLOAD_POINTER`. | `TraceContextExtraction` (sealed) |
+| **Enrichment Source Definition** | The content of a revision: where the trace context is found, the scope and the field mappings (later also payload format, filter, start position and missing-context policy). | `EnrichmentSourceDefinition`; `definition jsonb` |
+| **Trace Context Source** | Where an enrichment event names its trace (and optionally span): a `traceparent` header, a header with a bare trace id, or a payload field. | `TraceContextSource` (sealed: `TraceparentHeader`, `TraceIdHeader`, `PayloadField`) |
 | **Field Mapping** | A rule taking one field from the event (payload JSON Pointer, header, record key or record timestamp), applying a **Transform**, and producing one attribute `targetKey` of a declared type. | `FieldMapping`, `Transform` |
 | **Enrichment Record** | One attribute value derived from one enrichment event. It is append-only, carries the Kafka record coordinates, and is idempotent on them. | `EnrichmentRecord`; `tc.trace_enrichment` |
 | **Business Operation Definition** | A named business-operation family (e.g. `idp.login`). It declares the attribute keys whose values identify an operation, plus a merge window. | `BusinessOperationDefinition`; `tc.business_operation_definition` |
@@ -75,13 +80,13 @@ The terms below are used with exactly these meanings in code, API, UI and docume
 | **Correlation Value** | The current mapping from (business operation definition, value) to business operation, maintained by the resolver. | `CorrelationValue`; `tc.correlation_value` |
 | **Business Operation** | The set of traces that represent one business action (one IdP login) and are connected through shared correlation values. It can be merged into another operation. | `BusinessOperation`; `tc.business_operation` |
 | **Merge** | Joining two business operations when a later observation shows they share a value. The loser points to the survivor through `merged_into`. | `OperationLinker`, `OperationMergePolicy` |
-| **Span Link** | A native OTel link from a span to a span of another trace, indexed in both directions. | `SpanLinkRef`; `tc.span_link` |
+| **Span Link** | A native OTel link from a span to a span of another trace, indexed in both directions. | `SpanLink`; `tc.span_link` |
 | **Retention Policy** | Per table: its retention **tier** (`FULL` or `DIGEST`), how long data is kept, the partition granularity, and how far ahead partitions are pre-created. Durations are set per tier, not per table (ADR-13). | `RetentionPolicy`; `tc.retention_policy` |
-| **Full tier** | All detailed trace data: `span`, `trace_attribute`, `span_link`, `trace_summary`, `trace_enrichment`, `trace_correlation`, `correlation_value`, `business_operation`. Kept `fullDays` = n days (default 7, min 2). Span-level detail, brute-force search and every search operator exist only here. | `RetentionTier.FULL`; `retention_policy.tier = 'FULL'` |
+| **Full tier** | All detailed trace data: `span`, `trace_attribute`, `span_link`, `trace_summary`, `trace_enrichment`, `trace_correlation`, `correlation_value`, `business_operation`. Kept `fullDataDays` = n days (default 7, min 2). Span-level detail, brute-force search and every search operator exist only here. | `RetentionTier.FULL`; `retention_policy.tier = 'FULL'` |
 | **Digest tier** | The compact history kept after the full tier ends: `trace_digest` and `business_operation_digest`. Kept `digestDays` = m days (default 90) **after** the full tier, so a digest day is dropped when it is older than n + m days (default 97). `digestDays = 0` disables the tier. | `RetentionTier.DIGEST`; `retention_policy.tier = 'DIGEST'` |
 | **Trace Digest** | One row per trace in the digest tier: start, duration, root service and name, span and error counts, services, trace outcome, business operation id, and the retained attributes. No spans, events, links or enrichment lineage. About 0.5 KB per trace (capacity in 04 §9). | `TraceDigest`; `tc.trace_digest` |
 | **Business Operation Digest** | One row per root business operation in the digest tier: type, display value, first/last seen, trace count, **operation outcome**, ordered steps (one per member trace) and the union of the members' retained attributes. | `BusinessOperationDigest`; `tc.business_operation_digest` |
-| **Retained attribute** | An indexed attribute key flagged `retain_in_digest = true`. Its values are copied from `trace_attribute` into `trace_digest.attributes` at compaction. A retained key must be indexed: compaction never reads spans. Flagging a key is **not retroactive** for already-compacted days. | `IndexedAttribute.retainInDigest`; `indexed_attribute.retain_in_digest` |
+| **Retained attribute** | An indexed attribute key flagged `retain_in_digest = true`. Its values are copied from `trace_attribute` into `trace_digest.attributes` at compaction. A retained key must be indexed: compaction never reads spans. Flagging a key is **not retroactive** for already-compacted days. | `IndexedAttribute.retainedInDigest`; `indexed_attribute.retain_in_digest` |
 | **Digest transform** | How a retained value is stored in the digest: `NONE` (as is), `SHA256` (lowercase hex of SHA-256 over the UTF-8 value) or `MASK` (first 2 chars + `***`). It lets PII stay joinable (SHA256) or recognisable (MASK) without keeping the raw value for n + m days. | `DigestTransform`; `indexed_attribute.digest_transform` |
 | **Outcome rule** | Per business operation definition, optional: how to derive the outcome of a business operation at compaction from `outcomeKey` + `successValues` / `failureValues`, member errors, and `finalStepLabel`. Evaluated in a fixed order (§4.10). | `OutcomeRule`; `business_operation_definition.outcome_rule jsonb` |
 | **Operation outcome** | Result of the outcome rule for one business operation: `UNKNOWN` (0), `SUCCESS` (1), `FAILED` (2), `INCOMPLETE` (3). The trace-level counterpart is the **trace outcome**: `OK` (1, `error_count = 0`) or `ERROR` (2). | `OperationOutcome`, `TraceOutcome`; `business_operation_digest.outcome`, `trace_digest.outcome` |
@@ -92,7 +97,7 @@ The terms below are used with exactly these meanings in code, API, UI and docume
 | **Config Snapshot** | An immutable, in-memory copy of all config tables at one config revision. | `ConfigSnapshot` |
 | **DLQ record** | A Kafka record that could not be processed. It is copied byte-for-byte to `otlp-traces.dlq` or `tc-enrichment.dlq` with diagnostic headers. | `DeadLetter`, `DeadLetterReason` |
 | **Watermark** | The resolver's position in `trace_correlation` (`correlation_resolver_state.last_processed_id`). | `correlation_resolver_state` |
-| **PII class** | How sensitive an attribute key is (`NONE`, `PERSONAL` or `SECRET`). It drives masking in the Query context. | `PiiClass` |
+| **Sensitivity** | How sensitive the values of an attribute key are (`NONE`, `PERSONAL` or `SECRET`). It drives masking in the Query context and the transforms allowed for retained keys. | `Sensitivity`, `SensitivityPolicy` |
 
 Words that are deliberately **not** used:
 
@@ -109,10 +114,10 @@ Words that are deliberately **not** used:
 | Context | Owner deployable(s) | Core concepts | Owns tables (writes) |
 |---|---|---|---|
 | **Ingestion** | `tc-ingester` | TraceFragment, Span, TraceSummary, Resource, InstrumentationScope, dictionaries, TraceDay | `span`, `trace_summary`, `resource`, `instrumentation_scope`, `service`, `span_name`, `attribute_key` (insert of new keys), `span_link`; appends to `trace_attribute` and `trace_correlation` |
-| **Enrichment** | `tc-enricher` | EnrichmentSource runtime, TraceContextExtraction, FieldMapping, EnrichmentRecord | `trace_enrichment`; appends to `trace_attribute` and `trace_correlation` |
+| **Enrichment** | `tc-enricher` | EnrichmentSource runtime, TraceContextSource, FieldMapping, EnrichmentRecord | `trace_enrichment`; appends to `trace_attribute` and `trace_correlation` |
 | **Correlation** | `tc-maintenance` (CorrelationResolver). The extraction half runs inside Ingestion and Enrichment. | BusinessOperationDefinition, CorrelationObservation, CorrelationValue, BusinessOperation | `business_operation`, `correlation_value`, `correlation_resolver_state` |
-| **Query** | `tc-query-api`, `tc-ui` | TraceView, TraceSummaryView, TraceDigestView, BusinessOperationView, SearchCriteria (split at the tier boundary), PiiMaskingPolicy | none (read replica only); reads both tiers |
-| **Configuration (control plane)** | `tc-control-plane` | KafkaConnection, EnrichmentSource definition and lifecycle, IndexedAttribute (incl. retainInDigest, digestTransform), BusinessOperationDefinition (incl. OutcomeRule), RetentionPolicy / RetentionTiers, CompactionExclusion, ConfigRevision | `kafka_connection`, `enrichment_source`, `enrichment_source_revision`, `indexed_attribute`, `business_operation_definition`, `correlation_key`, `retention_policy`, `compaction_exclusion`, `config_revision`; inserts into `attribute_key` |
+| **Query** | `tc-query-api`, `tc-ui` | TraceView, TraceSummaryView, TraceDigestView, BusinessOperationView, SearchCriteria (split at the tier boundary), SensitivityPolicy | none (read replica only); reads both tiers |
+| **Configuration (control plane)** | `tc-control-plane` | KafkaConnection, EnrichmentSource definition and lifecycle, IndexedAttribute (incl. retainedInDigest, digestTransform), BusinessOperationDefinition (incl. OutcomeRule), RetentionPolicy / RetentionTiers, CompactionExclusion, ConfigRevision | `kafka_connection`, `enrichment_source`, `enrichment_source_revision`, `indexed_attribute`, `business_operation_definition`, `correlation_key`, `retention_policy`, `compaction_exclusion`, `config_revision`; inserts into `attribute_key` |
 | **Retention** | `tc-maintenance` (PartitionManager, **DigestCompactor**, AttributeBackfill, DictionaryGc, StatsRefresher) | RetentionPolicy enforcement, Partition, **Compaction** (TraceDigest, BusinessOperationDigest, OutcomeRule evaluation, DigestProgress), Drop gate | DDL on partitioned tables; `trace_digest`, `business_operation_digest`, `compaction_state`; `indexed_attribute.status` (BACKFILLING to ACTIVE); `resource` GC; `correlation_value` cleanup |
 
 `tc-schema-migrator` is not a context. It is infrastructure that owns the DDL migrations for all contexts.
@@ -209,179 +214,30 @@ All value objects are Java 25 `record`s whose compact constructors validate inva
 
 ### 3.1 TraceId
 
-Invariants:
+`record TraceId(long high, long low) implements Comparable<TraceId>` (package `domain.trace`):
 
-- 32 lowercase hex characters (16 bytes);
-- not all zeros (W3C Trace Context: an all-zero trace-id is invalid);
-- maps losslessly to a PostgreSQL `uuid` (ADR-10).
-
-```java
-package ru.aasmc.tracing.collector.domain.trace;
-
-import java.util.HexFormat;
-import java.util.Locale;
-import java.util.UUID;
-
-/** 128-bit trace id. Stored as PostgreSQL uuid (16 bytes); rendered as 32 lowercase hex. */
-public record TraceId(long high, long low) implements Comparable<TraceId> {
-
-    private static final HexFormat HEX = HexFormat.of(); // lowercase
-
-    public TraceId {
-        if (high == 0L && low == 0L) {
-            throw new IllegalArgumentException("TraceId must not be all zeros");
-        }
-    }
-
-    /** Accepts upper/lower case on API input; the wire (starter) always sends lowercase. */
-    public static TraceId parse(String hex) {
-        if (hex == null || hex.length() != 32) {
-            throw new IllegalArgumentException("TraceId must be 32 hex chars: " + hex);
-        }
-        String s = hex.toLowerCase(Locale.ROOT);
-        for (int i = 0; i < 32; i++) {
-            if (!HexFormat.isHexDigit(s.charAt(i))) {
-                throw new IllegalArgumentException("TraceId contains non-hex char: " + hex);
-            }
-        }
-        return new TraceId(HexFormat.fromHexDigitsToLong(s, 0, 16), HexFormat.fromHexDigitsToLong(s, 16, 32));
-    }
-
-    public static TraceId fromUuid(UUID uuid) {
-        return new TraceId(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits());
-    }
-
-    /** Raw 128 bits in a uuid column; this is NOT an RFC 9562 versioned UUID, PostgreSQL does not care. */
-    public UUID toUuid() {
-        return new UUID(high, low);
-    }
-
-    public String toHex() {
-        return HEX.toHexDigits(high) + HEX.toHexDigits(low);
-    }
-
-    @Override
-    public int compareTo(TraceId o) {
-        int c = Long.compareUnsigned(high, o.high);
-        return c != 0 ? c : Long.compareUnsigned(low, o.low);
-    }
-
-    @Override
-    public String toString() {
-        return toHex();
-    }
-}
-```
-
-`toUuid()` and `fromUuid()` are exact inverses. The ordering used by `compareTo` (unsigned byte order) is the same as PostgreSQL's `uuid` ordering, so keyset cursors built in Java agree with `ORDER BY trace_id`.
+- 128 bits, never all zeros (W3C Trace Context: an all-zero trace id is invalid) — `INVALID_TRACE_ID`;
+- `parse(hex)` accepts 32 hex characters in either case and throws `INVALID_TRACE_ID`; `tryParse(hex)` returns `Optional` instead (used for untrusted input such as `traceparent` headers); hex is parsed strictly (no sign, no whitespace);
+- `toHex()` (also `toString()`) gives 32 lowercase hex characters;
+- `toUuid()` / `fromUuid(UUID)` are exact inverses: a trace id is stored as PostgreSQL `uuid` with the same 128 bits (ADR-10), not as an RFC 9562 versioned UUID;
+- `compareTo` orders as unsigned bytes, the same order PostgreSQL uses for `uuid`, so keyset cursors built in Java agree with `ORDER BY trace_id`.
 
 ### 3.2 SpanId
 
-Invariants:
+`record SpanId(long value)`:
 
-- 16 hex characters (8 bytes);
-- not all zeros;
-- maps to `bigint` by reinterpreting the 64 bits as two's-complement, so ids ≥ `8000000000000000` become negative longs. The mapping is lossless.
+- 64 bits, never zero — `INVALID_SPAN_ID`;
+- stored as signed `bigint` by reinterpreting the 64 bits as two's complement, so ids from `8000000000000000` up become negative longs; the mapping is lossless;
+- `parse(hex)` like `TraceId.parse`; `parseParent(hex)` returns empty for the root markers `"0000000000000000"`, `null` and `""`, else parses;
+- `toHex()` gives 16 lowercase hex characters.
 
-The all-zero parent id on the wire means "no parent". That is handled by `parseParent`, not by the constructor.
+`record Traceparent(int version, TraceId traceId, SpanId parentSpanId, TraceFlags flags)` parses a W3C `traceparent` with `parse(value)`, which never throws and returns `Optional`: version `ff` is invalid, version `00` has exactly 55 characters, a higher version may append `-…` fields, and all-zero ids are invalid. `TraceFlags(int value)` is one unsigned byte (0..255, else `INVALID_SPAN`); bit `0x01` means sampled, unknown bits are kept.
 
-```java
-package ru.aasmc.tracing.collector.domain.trace;
+### 3.3 TimeRange, TraceDay, EpochNanos
 
-import java.util.HexFormat;
-import java.util.Locale;
-import java.util.Optional;
-
-public record SpanId(long value) {
-
-    private static final HexFormat HEX = HexFormat.of();
-    public static final String INVALID_HEX = "0000000000000000";
-
-    public SpanId {
-        if (value == 0L) {
-            throw new IllegalArgumentException("SpanId must not be all zeros");
-        }
-    }
-
-    public static SpanId parse(String hex) {
-        if (hex == null || hex.length() != 16) {
-            throw new IllegalArgumentException("SpanId must be 16 hex chars: " + hex);
-        }
-        String s = hex.toLowerCase(Locale.ROOT);
-        for (int i = 0; i < 16; i++) {
-            if (!HexFormat.isHexDigit(s.charAt(i))) {
-                throw new IllegalArgumentException("SpanId contains non-hex char: " + hex);
-            }
-        }
-        return new SpanId(HexFormat.fromHexDigitsToLong(s)); // unsigned 64 bits -> signed long, lossless
-    }
-
-    /** Root spans carry "0000000000000000" (OTel SpanData.getParentSpanId()); null/empty is tolerated. */
-    public static Optional<SpanId> parseParent(String hex) {
-        if (hex == null || hex.isEmpty() || INVALID_HEX.equals(hex)) {
-            return Optional.empty();
-        }
-        return Optional.of(parse(hex));
-    }
-
-    public String toHex() {
-        return HEX.toHexDigits(value);
-    }
-
-    @Override
-    public String toString() {
-        return toHex();
-    }
-}
-```
-
-### 3.3 TimeRange and TraceDay
-
-```java
-package ru.aasmc.tracing.collector.domain.trace;
-
-import java.time.Duration;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
-
-/** Half-open interval [from, to). */
-public record TimeRange(Instant from, Instant to) {
-    public TimeRange {
-        if (from == null || to == null) throw new IllegalArgumentException("bounds required");
-        if (to.isBefore(from)) throw new IllegalArgumentException("to < from");
-    }
-    public Duration length() { return Duration.between(from, to); }
-    public boolean contains(Instant t) { return !t.isBefore(from) && t.isBefore(to); }
-    public TimeRange requireMaxLength(Duration max) {
-        if (length().compareTo(max) > 0) throw new IllegalArgumentException("range exceeds " + max);
-        return this;
-    }
-}
-
-/** UTC calendar day under which a trace's summary is filed (trace_summary partition key). */
-public record TraceDay(LocalDate value) {
-    public TraceDay {
-        if (value == null) throw new IllegalArgumentException("day required");
-    }
-    public static TraceDay ofEpochNanos(long epochNanos) {
-        return new TraceDay(LocalDate.ofInstant(EpochNanos.toInstant(epochNanos), ZoneOffset.UTC));
-    }
-}
-
-/** Helpers: wire times are epoch nanos (as strings); PostgreSQL timestamptz has microsecond precision. */
-public final class EpochNanos {
-    private EpochNanos() {}
-    public static long parse(String s) { return Long.parseLong(s); }           // never via double
-    public static Instant toInstant(long nanos) {
-        return Instant.ofEpochSecond(Math.floorDiv(nanos, 1_000_000_000L), Math.floorMod(nanos, 1_000_000_000L));
-    }
-    /** Value written to timestamptz: truncated (not rounded) to microseconds, per ADR-10. */
-    public static Instant toMicros(long nanos) {
-        return toInstant(nanos - Math.floorMod(nanos, 1_000L));
-    }
-}
-```
+- `record TimeRange(Instant from, Instant to)` is the half-open interval `[from, to)` with both ends set and `from < to` (`INVALID_TIME_RANGE`).
+- `record TraceDay(LocalDate value) implements Comparable<TraceDay>` is the UTC day a trace is filed under; `ofEpochNanos(nanos)` gives the UTC day of a time.
+- `EpochNanos` converts wire times: `parse(text)` reads the decimal string exactly (never through `double`); `toInstant(nanos)` is exact (negative values are before 1970); `toInstantTruncatedToMicros(nanos)` cuts (does not round) to the microseconds PostgreSQL `timestamptz` keeps (ADR-10).
 
 **Trace Day rule.** `TraceDayResolver` in `ingest.trace` uses this order:
 
@@ -395,144 +251,20 @@ A fragment that arrives more than a day after a trace was first filed, or a race
 
 ### 3.4 Attributes
 
-```java
-package ru.aasmc.tracing.collector.domain.attribute;
+- `record AttributeKey(String value)`: not blank (`INVALID_ATTRIBUTE_KEY`); the length limit is `AttributeLimits.maxKeyLength`. Producers may send any key. `allowedAsEnrichmentTarget()` refuses the keys an enrichment mapping must not overwrite: prefixes `service.`, `otel.`, `telemetry.`, `tc.` and the built-in search keys `span.name` and `status`.
+- `enum AttributeType`: the eight OTel types `STRING`, `BOOLEAN`, `LONG`, `DOUBLE` and their `_ARRAY` forms.
+- `sealed interface AttributeValue` with `StringValue`, `BoolValue`, `LongValue`, `DoubleValue`, `StringArrayValue`, `BoolArrayValue`, `LongArrayValue`, `DoubleArrayValue`:
+  - no `null` values or elements, doubles are finite because `jsonb` cannot store NaN or infinity (`INVALID_ATTRIBUTE_TYPE`); arrays are immutable copies;
+  - `StringValue.of(raw, maxBytes)` and `StringArrayValue.of(raw, maxBytes)` cut strings to the configured UTF-8 size without splitting a character and record it in `wasTruncated()`;
+  - LONG stays `long`, never passing through `double`, so values above 2^53 keep every digit;
+  - `indexValues()` gives the index tokens, one per array element; `numericValue()` is present for LONG and DOUBLE only.
+- `record Attributes(SequencedMap<AttributeKey, AttributeValue> entries)`: an immutable copy in producer order (kept for display); no `null` keys or values; `empty()`, `anyValueTruncated()`.
+- `record AttributeLimits(maxKeyLength, maxValueBytes, maxEntries)`, default 255 characters, 4 KiB, 512 entries; `requireWithin(attributes)` throws `TOO_MANY_ATTRIBUTES` or `INVALID_ATTRIBUTE_KEY`.
+- `record TruncatedText(String value, boolean wasTruncated)` with `truncate(text, maxBytes)`: the shared UTF-8 cut used for values and index tokens.
 
-import java.util.regex.Pattern;
-
-/** OTel attribute key. Interned via attribute_key dictionary (attribute_key.id). */
-public record AttributeKey(String value) implements Comparable<AttributeKey> {
-    public static final int MAX_LENGTH = 255;
-    private static final Pattern FORBIDDEN = Pattern.compile("[\\p{Cntrl}]");
-
-    public AttributeKey {
-        if (value == null || value.isBlank()) throw new IllegalArgumentException("blank key");
-        if (value.length() > MAX_LENGTH) throw new IllegalArgumentException("key too long: " + value.length());
-        if (FORBIDDEN.matcher(value).find()) throw new IllegalArgumentException("control chars in key");
-    }
-    public static final AttributeKey SERVICE_NAME = new AttributeKey("service.name");
-    public static final AttributeKey SPAN_NAME = new AttributeKey("span.name");
-    public static final AttributeKey STATUS = new AttributeKey("status");
-    public boolean isReservedForTcs() { return value.startsWith("tc."); }
-    @Override public int compareTo(AttributeKey o) { return value.compareTo(o.value); }
-}
-```
+*Planned* (Phase 2, with the storage of `trace_attribute`):
 
 ```java
-package ru.aasmc.tracing.collector.domain.attribute;
-
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.OptionalDouble;
-
-public enum AttributeType { STRING, BOOLEAN, LONG, DOUBLE, STRING_ARRAY, BOOLEAN_ARRAY, LONG_ARRAY, DOUBLE_ARRAY }
-
-/** Typed OTel attribute value. Exactly the eight OTel AttributeType names used by the starter. */
-public sealed interface AttributeValue
-        permits AttributeValue.StringValue, AttributeValue.BoolValue, AttributeValue.LongValue,
-                AttributeValue.DoubleValue, AttributeValue.StringArrayValue, AttributeValue.BoolArrayValue,
-                AttributeValue.LongArrayValue, AttributeValue.DoubleArrayValue {
-
-    int MAX_STRING_BYTES = 4 * 1024; // Tempo-like limit; truncate + flag
-
-    AttributeType type();
-
-    /** Tokens written to trace_attribute.value_str (one per array element). */
-    List<String> indexTokens();
-
-    /** Value for trace_attribute.value_num when the key is registered as numeric. */
-    default OptionalDouble numeric() { return OptionalDouble.empty(); }
-
-    default boolean truncated() { return false; }
-
-    record StringValue(String value, boolean truncated) implements AttributeValue {
-        public StringValue {
-            if (value == null) throw new IllegalArgumentException("null string");
-            if (value.getBytes(StandardCharsets.UTF_8).length > MAX_STRING_BYTES)
-                throw new IllegalArgumentException("use StringValue.of() to truncate");
-        }
-        /** Truncates to 4 KiB of UTF-8 without splitting a surrogate pair. */
-        public static StringValue of(String raw) {
-            byte[] b = raw.getBytes(StandardCharsets.UTF_8);
-            if (b.length <= MAX_STRING_BYTES) return new StringValue(raw, false);
-            int end = raw.length();
-            while (raw.substring(0, end).getBytes(StandardCharsets.UTF_8).length > MAX_STRING_BYTES) {
-                end = Math.max(0, end - Math.max(1, (b.length - MAX_STRING_BYTES) / 4));
-                if (end > 0 && Character.isHighSurrogate(raw.charAt(end - 1))) end--;
-            }
-            return new StringValue(raw.substring(0, end), true);
-        }
-        public AttributeType type() { return AttributeType.STRING; }
-        public List<String> indexTokens() { return List.of(value); }
-    }
-
-    record BoolValue(boolean value) implements AttributeValue {
-        public AttributeType type() { return AttributeType.BOOLEAN; }
-        public List<String> indexTokens() { return List.of(Boolean.toString(value)); }
-    }
-
-    /** LONG is parsed from the JSON number as long (never via double: values above 2^53 must survive). */
-    record LongValue(long value) implements AttributeValue {
-        public AttributeType type() { return AttributeType.LONG; }
-        public List<String> indexTokens() { return List.of(Long.toString(value)); }
-        @Override public OptionalDouble numeric() { return OptionalDouble.of(value); }
-    }
-
-    record DoubleValue(double value) implements AttributeValue {
-        public DoubleValue {
-            if (Double.isNaN(value)) throw new IllegalArgumentException("NaN not indexable");
-        }
-        public AttributeType type() { return AttributeType.DOUBLE; }
-        public List<String> indexTokens() { return List.of(Double.toString(value)); }
-        @Override public OptionalDouble numeric() { return OptionalDouble.of(value); }
-    }
-
-    record StringArrayValue(List<String> values) implements AttributeValue {
-        public StringArrayValue { values = List.copyOf(values); }
-        public AttributeType type() { return AttributeType.STRING_ARRAY; }
-        public List<String> indexTokens() { return values; }
-    }
-
-    record BoolArrayValue(List<Boolean> values) implements AttributeValue {
-        public BoolArrayValue { values = List.copyOf(values); }
-        public AttributeType type() { return AttributeType.BOOLEAN_ARRAY; }
-        public List<String> indexTokens() { return values.stream().map(String::valueOf).toList(); }
-    }
-
-    record LongArrayValue(List<Long> values) implements AttributeValue {
-        public LongArrayValue { values = List.copyOf(values); }
-        public AttributeType type() { return AttributeType.LONG_ARRAY; }
-        public List<String> indexTokens() { return values.stream().map(String::valueOf).toList(); }
-    }
-
-    record DoubleArrayValue(List<Double> values) implements AttributeValue {
-        public DoubleArrayValue { values = List.copyOf(values); }
-        public AttributeType type() { return AttributeType.DOUBLE_ARRAY; }
-        public List<String> indexTokens() { return values.stream().map(String::valueOf).toList(); }
-    }
-}
-```
-
-```java
-package ru.aasmc.tracing.collector.domain.attribute;
-
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.SequencedMap;
-
-/** Ordered, immutable attribute map (producer order preserved for display). */
-public record Attributes(SequencedMap<AttributeKey, AttributeValue> entries) {
-    public static final int MAX_ENTRIES = 512;
-    public static final Attributes EMPTY = new Attributes(new LinkedHashMap<>());
-
-    public Attributes {
-        if (entries.size() > MAX_ENTRIES) throw new IllegalArgumentException("too many attributes");
-        entries = Collections.unmodifiableSequencedMap(new LinkedHashMap<>(entries));
-    }
-    public boolean anyTruncated() { return entries.values().stream().anyMatch(AttributeValue::truncated); }
-    public java.util.Optional<AttributeValue> get(AttributeKey k) { return java.util.Optional.ofNullable(entries.get(k)); }
-}
-
 public enum AttributeOrigin {
     SPAN((short) 1), RESOURCE((short) 2), ENRICHMENT((short) 3), DERIVED((short) 4);
     public final short code;
@@ -555,9 +287,8 @@ import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeValue;
 import ru.aasmc.tracing.collector.domain.attribute.Attributes;
 
-/** Content-hash identity: xxHash64 over the canonical encoding (ADR-06). */
-public record ResourceId(long value) {}
-public record ScopeId(long value) {}
+// Implemented: ResourceId(long) and InstrumentationScopeId(long), computed by ResourceHasher (below).
+// Planned (with ingestion): the dictionary ids and the content records.
 public record ServiceId(int value) { public ServiceId { if (value <= 0) throw new IllegalArgumentException(); } }
 public record SpanNameId(int value) { public SpanNameId { if (value <= 0) throw new IllegalArgumentException(); } }
 
@@ -566,37 +297,37 @@ public record Resource(ResourceId id, String serviceName, String schemaUrl, Attr
 
     public Resource {
         if (serviceName == null || serviceName.isBlank()) throw new IllegalArgumentException("serviceName");
-        if (!id.equals(ContentHash.resourceId(schemaUrl, attributes)))
+        if (!id.equals(ResourceHasher.resourceId(schemaUrl, attributes)))
             throw new IllegalArgumentException("ResourceId does not match content");
     }
 
     public static Resource of(String schemaUrl, Attributes attributes) {
-        String svc = attributes.get(AttributeKey.SERVICE_NAME)
-                .filter(v -> v instanceof AttributeValue.StringValue)
-                .map(v -> ((AttributeValue.StringValue) v).value())
-                .filter(s -> !s.isBlank())
-                .orElse(UNKNOWN_SERVICE);
-        return new Resource(ContentHash.resourceId(schemaUrl, attributes), svc, schemaUrl, attributes);
+        String svc = attributes.entries().get(new AttributeKey("service.name"))
+                instanceof AttributeValue.StringValue(String name, boolean _) && !name.isBlank()
+                ? name
+                : UNKNOWN_SERVICE;
+        return new Resource(ResourceHasher.resourceId(schemaUrl, attributes), svc, schemaUrl, attributes);
     }
 }
 
-public record InstrumentationScope(ScopeId id, String name, String version, String schemaUrl, Attributes attributes) {
+public record InstrumentationScope(InstrumentationScopeId id, String name, String version, String schemaUrl,
+                                   Attributes attributes) {
     public InstrumentationScope {
         if (name == null) throw new IllegalArgumentException("scope name");
-        if (!id.equals(ContentHash.scopeId(name, version, schemaUrl, attributes)))
-            throw new IllegalArgumentException("ScopeId does not match content");
+        if (!id.equals(ResourceHasher.instrumentationScopeId(name, version, schemaUrl, attributes)))
+            throw new IllegalArgumentException("InstrumentationScopeId does not match content");
     }
 }
 ```
 
-**Canonical encoding.** `ResourceHasher` encodes the content as bytes in which every text is written as `<UTF-8 byte length in decimal> ':' <UTF-8 bytes>`:
+**Canonical encoding** (implemented). `ResourceHasher.resourceId(schemaUrl, attributes)` and `instrumentationScopeId(name, version, schemaUrl, attributes)` encode the content as bytes in which every text is written as `<UTF-8 byte length in decimal> ':' <UTF-8 bytes>`:
 
 1. resource: the text `schemaUrl`; scope: the texts `name`, `version`, `schemaUrl` (`""` for null);
-2. the attributes **sorted by key**, each as the text `key`, the text `typeName`, the number of index tokens followed by `':'`, and each token as a text.
+2. the attributes **sorted by key** (`String.compareTo`), each as the text `key`, the text `type` (the `AttributeType` name), the number of index tokens followed by `':'`, and each token as a text.
 
 Example: schema URL `s` with `host.name = "n1"` encodes as `1:s9:host.name6:STRING1:2:n1`. Because every text carries its length and every array its size, two different contents never share an encoding, whatever characters they hold (`[]` and `[""]` encode as `0:` and `1:0:`).
 
-That encoding is hashed with xxHash64, seed 0. The encoding is part of the domain contract. Changing it does not corrupt data, but it creates new `resource` rows for the same content. It would therefore be versioned (seed = encoding version) and announced.
+That encoding is hashed with xxHash64, seed 0 (a small pure-Java `XxHash64`, checked against the published test vectors). The encoding is part of the domain contract. Changing it does not corrupt data, but it creates new `resource` rows for the same content. It would therefore be versioned (seed = encoding version) and announced.
 
 A collision between two different resources (probability ≈ n²/2⁶⁵, about 3·10⁻⁸ for 1 M distinct resources) would be accepted silently. The span would point to the first resource seen. This is documented as an accepted risk.
 
@@ -604,118 +335,34 @@ A collision between two different resources (probability ≈ n²/2⁶⁵, about 
 
 ### 3.6 Span
 
-```java
-package ru.aasmc.tracing.collector.domain.trace;
+`record Span(traceId, spanId, parentSpanId, name, kind, startEpochNanos, durationNanos, status, resourceId, serviceName, instrumentationScopeId, traceFlags, traceState, attributes, events, links, droppedByProducer, collectorFlags)` is one timed operation, stored once and never updated (fillfactor 100). Rules (`INVALID_SPAN`):
 
-import java.util.EnumSet;
-import java.util.List;
-import java.util.Set;
-import ru.aasmc.tracing.collector.domain.attribute.Attributes;
-import ru.aasmc.tracing.collector.domain.resource.ResourceId;
-import ru.aasmc.tracing.collector.domain.resource.ScopeId;
+- trace id and span id are set, and a span is not its own parent; `parentSpanId` is `null` for a root span (`isRoot()`);
+- `durationNanos >= 0` (the normaliser clamps a negative duration first); `endEpochNanos()` is start plus duration;
+- a `null` name becomes `""`; events, links and collector flags are immutable copies;
+- if any attribute value was cut, `SpanFlag.ATTRIBUTE_TRUNCATED` is added.
 
-public enum SpanKind {
-    INTERNAL(1), SERVER(2), CLIENT(3), PRODUCER(4), CONSUMER(5); // OTLP numeric values
-    public final short code;
-    SpanKind(int c) { this.code = (short) c; }
-    public static SpanKind fromWire(String name) { return valueOf(name); } // "SERVER" etc.
-}
+Its parts:
 
-public enum StatusCode {
-    UNSET(0), OK(1), ERROR(2);
-    public final short code;
-    StatusCode(int c) { this.code = (short) c; }
-}
+- `SpanKind` (`INTERNAL`, `SERVER`, `CLIENT`, `PRODUCER`, `CONSUMER`), `StatusCode` (`UNSET`, `OK`, `ERROR`), `SpanStatus(code, message)` with `isError()`; the storage codes (OTLP numbers) belong to the persistence layer;
+- `SpanEvent(name, epochNanos, attributes, droppedAttributes)` with an absolute time; `SpanLink(linkedTraceId, linkedSpanId, traceState, attributes)`; `DroppedCounts(attributes, events, links)`, each `>= 0`, `NONE` for no drops;
+- `SpanFlag`: what the collector noticed — `ATTRIBUTE_TRUNCATED`, `NOT_ENDED`, `PARENT_REMOTE`, `EVENTS_OR_LINKS_TRUNCATED`, `NEGATIVE_DURATION_CLAMPED`, `INDEX_VALUE_TRUNCATED` (bit values of `span.flags` in 04 §5.5).
 
-public record SpanStatus(StatusCode code, String message) {
-    public SpanStatus {
-        if (code == null) throw new IllegalArgumentException("status code");
-        if (message != null && message.isEmpty()) message = null; // starter sends "" -> NULL
-    }
-    public boolean isError() { return code == StatusCode.ERROR; }
-}
-
-/** W3C trace-flags; wire sends a signed Java byte, stored as smallint 0..255. */
-public record TraceFlags(int value) {
-    public TraceFlags {
-        if (value < 0 || value > 255) throw new IllegalArgumentException("flags out of range");
-    }
-    public static TraceFlags fromWireByte(byte b) { return new TraceFlags(b & 0xFF); }
-    public boolean sampled() { return (value & 0x01) != 0; }
-}
-
-/** Bits of span.flags (smallint). */
-public enum SpanFlag {
-    ATTRIBUTE_TRUNCATED(0x01), NOT_ENDED(0x02), PARENT_REMOTE(0x04), EVENTS_OR_LINKS_TRUNCATED(0x08),
-    NEGATIVE_DURATION_CLAMPED(0x10), INDEX_VALUE_TRUNCATED(0x20);   // canonical table: 04 §5.5
-    public final int bit;
-    SpanFlag(int bit) { this.bit = bit; }
-    public static short toBits(Set<SpanFlag> flags) {
-        int b = 0; for (SpanFlag f : flags) b |= f.bit; return (short) b;
-    }
-}
-
-public record DroppedCounts(int attributes, int events, int links) {
-    public DroppedCounts {
-        if (attributes < 0 || events < 0 || links < 0) throw new IllegalArgumentException("negative dropped count");
-    }
-    public boolean any() { return attributes > 0 || events > 0 || links > 0; } // else dropped_counts = NULL
-}
-
-public record SpanEvent(String name, long offsetNanos, Attributes attributes, int droppedAttributes) {}
-
-public record SpanLinkRef(TraceId linkedTraceId, SpanId linkedSpanId, String traceState, Attributes attributes) {}
-
-/** Immutable span. Never updated after insert (fillfactor 100). */
-public record Span(
-        TraceId traceId,
-        SpanId spanId,
-        SpanId parentSpanId,          // null for root spans
-        String name,
-        SpanKind kind,
-        long startEpochNanos,
-        long durationNanos,
-        SpanStatus status,
-        ResourceId resourceId,
-        String serviceName,           // denormalised from Resource for dictionary lookup
-        ScopeId scopeId,
-        TraceFlags traceFlags,
-        String traceState,            // W3C serialisation "k1=v1,k2=v2" or null
-        Attributes attributes,
-        List<SpanEvent> events,
-        List<SpanLinkRef> links,
-        DroppedCounts dropped,
-        Set<SpanFlag> flags) {
-
-    public Span {
-        if (traceId == null || spanId == null) throw new IllegalArgumentException("ids required");
-        if (spanId.equals(parentSpanId)) throw new IllegalArgumentException("span cannot be its own parent");
-        if (durationNanos < 0) throw new IllegalArgumentException("normalizer must clamp negative duration");
-        if (name == null) name = "";
-        events = List.copyOf(events);
-        links = List.copyOf(links);
-        flags = flags.isEmpty() ? Set.of() : Set.copyOf(EnumSet.copyOf(flags));
-        if (attributes.anyTruncated() && !flags.contains(SpanFlag.ATTRIBUTE_TRUNCATED))
-            throw new IllegalArgumentException("truncated attributes must be flagged");
-    }
-
-    public boolean isRoot() { return parentSpanId == null; }
-    public long endEpochNanos() { return startEpochNanos + durationNanos; }
-    public TraceDay startDay() { return TraceDay.ofEpochNanos(startEpochNanos); }
-}
-```
+`IngestLimits(maxSpansPerTrace, maxFragmentBytes, futureTolerance, maxIndexValueBytes, attributes)`, default 50 000 spans, 8 MiB, 1 day, 512 bytes and `AttributeLimits.DEFAULT`, holds the configurable ingest rules: `spansToStore(alreadyStored, incoming)`, `isFragmentTooLarge(bytes)`, `judgeSpanStart(start, now, retention)` → `SpanTimeVerdict` (`ACCEPT`, `FUTURE`, `EXPIRED`) and `truncateIndexValue(value)`.
 
 Invariants enforced by `SpanNormalizer` before construction:
 
 1. `spanContext.traceId == message.traceId`. Otherwise the record is poison, reason `TRACE_ID_MISMATCH`.
 2. `spanId == spanContext.spanId`.
 3. `end < start` gives duration 0 and `NEGATIVE_DURATION_CLAMPED`.
-4. `start > now + 1 day` makes the record poison, reason `FUTURE_TIMESTAMP`.
-5. `start < now - retention(span)` drops the span, increments the metric `tc_ingester_spans_dropped_total{reason="EXPIRED"}`, and lets the rest of the fragment proceed.
-6. String values longer than 4 KiB are truncated and flagged.
-7. A trace already holding 50 000 spans drops further spans with metric reason `TRACE_TOO_LARGE`. The count comes from `trace_summary.span_count` plus the current batch.
+4. A start after `now + futureTolerance` (`FUTURE`) makes the record poison, reason `FUTURE_TIMESTAMP`.
+5. A start before `now - retention(span)` (`EXPIRED`) drops the span, increments the metric `tc_ingester_spans_dropped_total{reason="EXPIRED"}`, and lets the rest of the fragment proceed.
+6. String values longer than `AttributeLimits.maxValueBytes` are truncated and flagged.
+7. A trace already holding `maxSpansPerTrace` spans drops further spans with metric reason `TRACE_TOO_LARGE`. The count comes from `trace_summary.span_count` plus the current batch (`spansToStore`).
 
 ### 3.7 TraceFragment
+
+*Planned* (Phase 3, ingest pipeline). The fragment size limit is `IngestLimits.maxFragmentBytes`, checked by the parser before the fragment is built.
 
 ```java
 package ru.aasmc.tracing.collector.domain.trace;
@@ -732,11 +379,8 @@ public record KafkaCoordinates(String topic, int partition, long offset, Instant
 
 /** One TraceMessage after parsing + normalisation; transient (lives for one poll batch). */
 public record TraceFragment(TraceId traceId, List<Span> spans, KafkaCoordinates source, int encodedBytes) {
-    public static final int MAX_BYTES = 8 * 1024 * 1024;
-
     public TraceFragment {
         spans = List.copyOf(spans);
-        if (encodedBytes > MAX_BYTES) throw new IllegalArgumentException("FRAGMENT_TOO_LARGE");
         for (Span s : spans) {
             if (!s.traceId().equals(traceId)) throw new IllegalArgumentException("TRACE_ID_MISMATCH");
         }
@@ -814,7 +458,7 @@ classDiagram
         +long durationNanos
         +SpanStatus status
         +ResourceId resourceId
-        +ScopeId scopeId
+        +InstrumentationScopeId instrumentationScopeId
         +TraceFlags traceFlags
         +Attributes attributes
         +isRoot() boolean
@@ -824,7 +468,7 @@ classDiagram
         +TraceDay traceDay
         +long startEpochNanos
         +long endEpochNanos
-        +RootInfo root
+        +RootSpan root
         +int spanCount
         +int errorCount
         +SortedSet~Integer~ serviceIds
@@ -838,7 +482,7 @@ classDiagram
         +Attributes attributes
     }
     class InstrumentationScope {
-        +ScopeId id
+        +InstrumentationScopeId id
         +String name
         +String version
     }
@@ -848,10 +492,10 @@ classDiagram
     class AttributeValue {
         <<sealed>>
         +type() AttributeType
-        +indexTokens() List~String~
+        +indexValues() List~String~
     }
     class SpanEvent
-    class SpanLinkRef {
+    class SpanLink {
         +TraceId linkedTraceId
         +SpanId linkedSpanId
     }
@@ -865,11 +509,11 @@ classDiagram
         +KafkaCoordinates source
     }
     class CorrelationObservation {
+        +Instant observedAt
         +int operationDefinitionId
         +int correlationKeyId
         +String value
         +TraceId traceId
-        +AttributeOrigin origin
     }
     TraceFragment "1" *-- "1..*" Span
     Span --> TraceId
@@ -878,7 +522,7 @@ classDiagram
     Span "*" --> "1" InstrumentationScope : scopeId
     Span *-- Attributes
     Span *-- "0..*" SpanEvent
-    Span *-- "0..*" SpanLinkRef
+    Span *-- "0..*" SpanLink
     Attributes o-- "0..*" AttributeValue
     TraceSummary ..> Span : built from inserted
     EnrichmentRecord ..> TraceId : joins at read time
@@ -887,10 +531,13 @@ classDiagram
 
 ### 4.3 Class diagram: configuration, enrichment and correlation
 
+Types marked `<<planned>>` are design only (see the package table).
+
 ```mermaid
 classDiagram
     direction LR
     class KafkaConnection {
+        <<planned>>
         +KafkaConnectionId id
         +String name
         +String bootstrapServers
@@ -906,36 +553,31 @@ classDiagram
         +KafkaConnectionId connectionId
         +String topic
         +SourceStatus status
-        +int currentRevision
-        +activate() EnrichmentSource
-        +pause() EnrichmentSource
-        +delete() EnrichmentSource
-        +revise(SourceDefinition) Revised
-        +consumerGroupId() String
+        +moveTo(SourceStatus) EnrichmentSource
     }
     class SourceRevision {
+        <<planned>>
         +int revision
-        +SourceDefinition definition
+        +EnrichmentSourceDefinition definition
         +String createdBy
     }
-    class SourceDefinition {
-        +PayloadFormat payloadFormat
-        +TraceContextExtraction traceContext
+    class EnrichmentSourceDefinition {
+        +TraceContextSource traceContextSource
         +EnrichmentScope scope
-        +EventFilter filter
-        +StartFrom startFrom
-        +OnMissingTraceContext onMissingTraceContext
         +List~FieldMapping~ fieldMappings
+        +extract(EnrichmentEvent, int) Extraction
     }
-    class TraceContextExtraction {
+    class TraceContextSource {
         <<sealed>>
+        +providesSpanId() boolean
+        +extract(EnrichmentEvent) Optional~TraceContext~
     }
     class TraceparentHeader
-    class RawHeader
-    class PayloadPointer
+    class TraceIdHeader
+    class PayloadField
     class FieldMapping {
         +FieldSource source
-        +String jsonPointer
+        +JsonPointer jsonPointer
         +String headerName
         +AttributeKey targetKey
         +AttributeType valueType
@@ -944,14 +586,17 @@ classDiagram
     }
     class Transform {
         <<sealed>>
+        +apply(String) Optional~String~
     }
     class IndexedAttribute {
         +int keyId
-        +OriginScope originScope
-        +boolean numeric
+        +AttributeKey key
         +IndexStatus status
-        +boolean retainInDigest
+        +boolean builtIn
+        +boolean retainedInDigest
         +DigestTransform digestTransform
+        +moveTo(IndexStatus) IndexedAttribute
+        +retainInDigest(DigestTransform, Sensitivity, boolean) IndexedAttribute
     }
     class DigestTransform {
         <<enumeration>>
@@ -972,11 +617,11 @@ classDiagram
         +Set~String~ successValues
         +Set~String~ failureValues
         +String finalStepLabel
-        +evaluate(List~MemberTrace~) Evaluation
+        +evaluate(List~MemberTrace~, int) OutcomeEvaluation
     }
     class CorrelationKey {
         +int id
-        +int keyId
+        +AttributeKey key
         +KeyRole role
         +String stepLabel
     }
@@ -984,16 +629,16 @@ classDiagram
         +UUID id
         +Instant firstSeen
         +Instant lastSeen
+        +int operationDefinitionId
         +String displayValue
         +int traceCount
         +UUID mergedInto
     }
-    class CorrelationValue {
-        +int operationDefinitionId
-        +String value
-        +UUID operationId
+    class OperationLinker {
+        +link(LinkingInput) LinkingResult
     }
     class RetentionPolicy {
+        <<planned>>
         +String tableName
         +RetentionTier tier
         +Duration retention
@@ -1001,24 +646,25 @@ classDiagram
         +Duration precreate
     }
     class RetentionTiers {
-        +int fullDays
+        +int fullDataDays
         +int digestDays
-        +digestDropAge() Duration
+        +requireFullDataOutlives(Duration)
+        +fullDataRetention() Duration
     }
     EnrichmentSource "*" --> "1" KafkaConnection
     EnrichmentSource "1" *-- "1..*" SourceRevision
-    SourceRevision *-- SourceDefinition
-    SourceDefinition *-- TraceContextExtraction
-    SourceDefinition *-- "1..64" FieldMapping
+    SourceRevision *-- EnrichmentSourceDefinition
+    EnrichmentSourceDefinition *-- TraceContextSource
+    EnrichmentSourceDefinition *-- "1..*" FieldMapping
     FieldMapping *-- Transform
-    TraceContextExtraction <|.. TraceparentHeader
-    TraceContextExtraction <|.. RawHeader
-    TraceContextExtraction <|.. PayloadPointer
+    TraceContextSource <|.. TraceparentHeader
+    TraceContextSource <|.. TraceIdHeader
+    TraceContextSource <|.. PayloadField
     BusinessOperationDefinition "1" *-- "1..*" CorrelationKey
-    BusinessOperationDefinition "1" *-- "0..1" OutcomeRule
+    BusinessOperationDefinition "1" *-- "1" OutcomeRule
     IndexedAttribute --> DigestTransform
     RetentionTiers ..> RetentionPolicy : sets retention of every row of a tier
-    CorrelationValue "*" --> "1" BusinessOperation
+    OperationLinker ..> BusinessOperation : creates, extends, merges
     BusinessOperation --> BusinessOperation : mergedInto
 ```
 
@@ -1031,92 +677,12 @@ classDiagram
 
 Disjointness is guaranteed by the span primary key. The writable CTE in `SpanBatchWriter` feeds the summary upsert **only with the rows `RETURNING`'d by `INSERT ... ON CONFLICT DO NOTHING`**, so a replayed fragment contributes the empty set (the identity element). That is why the counters stay correct under at-least-once delivery (UC-02).
 
-```java
-package ru.aasmc.tracing.collector.domain.trace;
+`record TraceSummary(traceId, traceDay, startEpochNanos, endEpochNanos, root, spanCount, errorCount, serviceIds, fragmentCount, firstIngestedAt, lastIngestedAt)`:
 
-import java.time.Instant;
-import java.util.Collection;
-import java.util.SortedSet;
-import java.util.TreeSet;
-
-public record RootInfo(SpanId spanId, int serviceId, Integer nameId, long startEpochNanos) {}
-
-public record TraceSummary(
-        TraceId traceId,
-        TraceDay traceDay,
-        long startEpochNanos,      // min(span.start)
-        long endEpochNanos,        // max(span.start + duration)
-        RootInfo root,             // null while rootless
-        int spanCount,
-        int errorCount,
-        SortedSet<Integer> serviceIds,
-        int fragmentCount,
-        Instant firstIngestedAt,
-        Instant lastIngestedAt) {
-
-    public TraceSummary {
-        if (spanCount < 1) throw new IllegalArgumentException("summary needs >= 1 span");
-        if (errorCount < 0 || errorCount > spanCount) throw new IllegalArgumentException("errorCount");
-        if (endEpochNanos < startEpochNanos) throw new IllegalArgumentException("end < start");
-        if (fragmentCount < 1) throw new IllegalArgumentException("fragmentCount");
-        if (lastIngestedAt.isBefore(firstIngestedAt)) throw new IllegalArgumentException("ingest times");
-        serviceIds = java.util.Collections.unmodifiableSortedSet(new TreeSet<>(serviceIds));
-    }
-
-    public long durationNanos() { return endEpochNanos - startEpochNanos; }
-    public boolean rootless() { return root == null; }
-
-    /** Summary of spans that were actually inserted from ONE fragment (fragmentCount = 1). */
-    public static TraceSummary ofInsertedSpans(TraceDay day, Collection<Span> inserted,
-                                               java.util.function.ToIntFunction<Span> serviceIdOf,
-                                               java.util.function.Function<Span, Integer> nameIdOf,
-                                               Instant now) {
-        Span first = inserted.iterator().next();
-        long min = Long.MAX_VALUE, max = Long.MIN_VALUE; int errors = 0; RootInfo root = null;
-        SortedSet<Integer> services = new TreeSet<>();
-        for (Span s : inserted) {
-            min = Math.min(min, s.startEpochNanos());
-            max = Math.max(max, s.endEpochNanos());
-            if (s.status().isError()) errors++;
-            services.add(serviceIdOf.applyAsInt(s));
-            if (s.isRoot()) {
-                RootInfo candidate = new RootInfo(s.spanId(), serviceIdOf.applyAsInt(s), nameIdOf.apply(s), s.startEpochNanos());
-                root = pickRoot(root, candidate);
-            }
-        }
-        return new TraceSummary(first.traceId(), day, min, max, root, inserted.size(), errors,
-                services, 1, now, now);
-    }
-
-    /** Commutative + associative. Mirrors the SQL ON CONFLICT DO UPDATE of trace_summary exactly. */
-    public TraceSummary merge(TraceSummary o) {
-        if (!traceId.equals(o.traceId)) throw new IllegalArgumentException("different traces");
-        SortedSet<Integer> services = new TreeSet<>(serviceIds);
-        services.addAll(o.serviceIds);
-        return new TraceSummary(
-                traceId,
-                traceDay.value().isBefore(o.traceDay.value()) ? traceDay : o.traceDay, // read-side merge of split rows
-                Math.min(startEpochNanos, o.startEpochNanos),
-                Math.max(endEpochNanos, o.endEpochNanos),
-                pickRoot(root, o.root),
-                spanCount + o.spanCount,
-                errorCount + o.errorCount,
-                services,
-                fragmentCount + o.fragmentCount,
-                firstIngestedAt.isBefore(o.firstIngestedAt) ? firstIngestedAt : o.firstIngestedAt,
-                lastIngestedAt.isAfter(o.lastIngestedAt) ? lastIngestedAt : o.lastIngestedAt);
-    }
-
-    /** Deterministic choice if a (malformed) trace has several roots: earliest start, then smallest span id. */
-    private static RootInfo pickRoot(RootInfo a, RootInfo b) {
-        if (a == null) return b;
-        if (b == null) return a;
-        int c = Long.compare(a.startEpochNanos(), b.startEpochNanos());
-        if (c != 0) return c < 0 ? a : b;
-        return Long.compareUnsigned(a.spanId().value(), b.spanId().value()) <= 0 ? a : b;
-    }
-}
-```
+- rules (`INVALID_TRACE_SUMMARY`): `spanCount >= 1`; `0 <= errorCount <= spanCount`; `endEpochNanos >= startEpochNanos`; `fragmentCount >= 1`; `lastIngestedAt >= firstIngestedAt`; `serviceIds` is an immutable sorted copy;
+- `root` is a `RootSpan(spanId, serviceId, nameId, startEpochNanos)`, `null` while the root has not arrived; `nameId` is `null` when the name is not in the dictionary;
+- `ofInsertedSpans(day, inserted, serviceIdOf, nameIdOf, now)` summarises the spans one fragment inserted (`fragmentCount = 1`); `inserted` is not empty and holds one trace;
+- `merge(other)` combines two summaries of the same trace: earliest day, start and first insert; latest end and last insert; sums of the counters; union of the services; as root the one that started first, ties broken by the smaller **unsigned** span id. It mirrors the SQL upsert below exactly.
 
 Equivalent SQL semantics for the upsert in the writable CTE (full statement in 03/04):
 
@@ -1136,6 +702,8 @@ Each poll batch is grouped by `(trace_id, trace_day)` before the upsert. Postgre
 `fragment_count` and `last_ingested_at` are the only fields that depend on *delivery* rather than *content*. They are diagnostic, and they are still replay-safe because a replayed fragment inserts zero spans and is not counted.
 
 ### 4.5 Trace completeness (derived)
+
+*Planned* (Phase 3, query).
 
 ```java
 public enum CompletenessState { RECEIVING, SETTLED }
@@ -1186,6 +754,8 @@ TCS, like Tempo's block-builder, has **no notion of "trace finished"**. The prod
 
 ### 4.6 KafkaConnection
 
+*Planned* (Phase 2–3, with the secret resolver). Only `KafkaConnectionId` exists yet, referenced by `EnrichmentSource`. The name will follow `Names` with a configured maximum length, like the other admin-created names.
+
 ```java
 package ru.aasmc.tracing.collector.domain.enrichment;
 
@@ -1216,7 +786,7 @@ public record KafkaConnection(KafkaConnectionId id, String name, String bootstra
             "bootstrap.servers", "security.protocol", "sasl.mechanism");
 
     public KafkaConnection {
-        if (name == null || !name.matches("[a-z0-9][a-z0-9._-]{1,62}")) throw new IllegalArgumentException("name");
+        Names.requireValid(name);
         if (bootstrapServers == null || bootstrapServers.isBlank()) throw new IllegalArgumentException("bootstrap");
         boolean sasl = securityProtocol == SecurityProtocol.SASL_PLAINTEXT || securityProtocol == SecurityProtocol.SASL_SSL;
         if (sasl && (saslMechanism == null || credentials == null))
@@ -1235,192 +805,31 @@ public record KafkaConnection(KafkaConnectionId id, String name, String bootstra
 
 #### 4.7.1 Definition value objects
 
-```java
-package ru.aasmc.tracing.collector.domain.enrichment;
+`record EnrichmentSourceDefinition(TraceContextSource traceContextSource, EnrichmentScope scope, List<FieldMapping> fieldMappings)` says what a source does with each event. Rules: both parts set; SPAN scope needs a trace-context source that provides a span id (`INVALID_SCOPE`); at least one mapping (`INVALID_MAPPING`) with distinct target keys (`DUPLICATE_TARGET_KEY`); the list is an immutable copy.
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.regex.Pattern;
-import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
-import ru.aasmc.tracing.collector.domain.attribute.AttributeType;
+- **`TraceContextSource`** (sealed) reads the trace context itself, through the domain interface `EnrichmentEvent`:
+  - `TraceparentHeader(headerName)` — the default; a blank name means `traceparent`; gives trace id **and** span id;
+  - `TraceIdHeader(headerName)` — a bare 32-hex trace id, e.g. `X-Trace-Id`; the name is not blank (`INVALID_TRACE_CONTEXT`);
+  - `PayloadField(JsonPointer pointer)` — a payload string holding a trace id or a `traceparent`; only the trace id is used, because whether the field holds a span id is unknown until events arrive.
+  `providesSpanId()` is true only for `TraceparentHeader`; `extract(event)` returns `Optional<TraceContext>` (`TraceContext(traceId, spanId)`, span id `null` for a trace-only context).
+- **`EnrichmentEvent`** is the read access to one event: `header(name)`, `recordKey()`, `recordTimestamp()`, `payloadValue(JsonPointer)` → `Optional<JsonScalar>` (`StringScalar`, `NumberScalar(BigDecimal)`, `BooleanScalar`; objects, arrays and `null` are not scalars). The domain decides *where* to look; `tc-kafka-support` implements *how* to read a Kafka record and its JSON.
+- **`JsonPointer(value)`** is RFC 6901 syntax: `""` or `/a/b~1c` (`INVALID_JSON_POINTER`).
+- **`FieldMapping(source, jsonPointer, headerName, targetKey, valueType, transform, required)`** with `FieldSource` `PAYLOAD`, `HEADER`, `RECORD_KEY`, `RECORD_TIMESTAMP`. Rules: PAYLOAD needs a pointer and HEADER a non-blank header name; `valueType` is a scalar type (STRING, BOOLEAN, LONG, DOUBLE) (`INVALID_MAPPING`); RECORD_TIMESTAMP maps to LONG (epoch ms) or STRING (ISO-8601); `targetKey` is `[a-z][a-z0-9_.-]*` (`INVALID_TARGET_KEY`) and allowed as an enrichment target (`RESERVED_KEY`); a transform other than `None` needs STRING (`INVALID_TRANSFORM`); a `null` transform becomes `None`. Reading a value: raw value → STRING is its text, transformed and cut to the attribute value limit (`TRANSFORM_FAILED` if the transform gives nothing); BOOLEAN, LONG and DOUBLE accept a JSON value or text of that type (`TYPE_MISMATCH` otherwise, e.g. `4.5` for LONG) → a missing value fails with `MISSING_REQUIRED_FIELD` only if the mapping is required. A JSON number becomes text through `BigDecimal.toString()` (`1e3` → `1E+3`), so a huge exponent is never expanded.
+- **`Transform`** (sealed): `None`, `Lowercase`, `Uppercase`, `Trim`, `Sha256` (lowercase hex), `Mask(keepLastChars)` (all but the last N code points become `*`), `RegexExtract(regex)` (first capturing group of the first match; RE2 syntax, so matching time is linear in the input). `apply(value)` returns `Optional<String>`, empty when a regex does not match. Arguments are checked on creation (`INVALID_TRANSFORM`).
+- **`EnrichmentSourceDefinition.extract(event, maxValueBytes)`** applies a definition to one event and returns the sealed **`Extraction`**: `Enriched(TraceContext target, Attributes attributes)`, `NoTraceContext()`, or `Rejected(ExtractionFailure reason, AttributeKey targetKey)` for the first failing mapping. The enricher handles it with an exhaustive `switch`: enriched rows in the poll's transaction, rejections to the DLQ.
+- **`EnrichmentLimits(maxNameLength, maxFieldMappings, maxTargetKeyLength, maxMaskKeepLastChars, maxRegexLength)`**, default 63, 50, 128, 16, 256; `requireWithin(source)` and `requireWithin(definition)`.
 
-public enum PayloadFormat { JSON }                       // PayloadDecoder SPI: AVRO, PROTOBUF later
-public enum EnrichmentScope { TRACE, SPAN }
-public enum StartFrom { LATEST, EARLIEST }               // only used when the group has no committed offset
-public enum OnMissingTraceContext { DLQ, DROP }
-public enum FieldSource { PAYLOAD, HEADER, RECORD_KEY, RECORD_TIMESTAMP }
-
-/** RFC 6901 JSON Pointer: "" (whole doc) or "/a/b~1c". Evaluated with Jackson JsonNode.at(). */
-public record JsonPointerExpr(String value) {
-    private static final Pattern P = Pattern.compile("^(/([^~/]|~[01])*)*$");
-    public JsonPointerExpr {
-        if (value == null || !P.matcher(value).matches()) throw new IllegalArgumentException("invalid JSON Pointer: " + value);
-    }
-}
-
-public sealed interface TraceContextExtraction
-        permits TraceContextExtraction.TraceparentHeader, TraceContextExtraction.RawHeader,
-                TraceContextExtraction.PayloadPointer {
-
-    /** Default. W3C traceparent "00-<32hex>-<16hex parent span>-<2hex flags>"; yields trace id AND span id. */
-    record TraceparentHeader(String headerName) implements TraceContextExtraction {
-        public TraceparentHeader { if (headerName == null || headerName.isBlank()) headerName = "traceparent"; }
-    }
-    /** A header whose value is a bare 32-hex trace id (e.g. "X-Trace-Id"); no span id. */
-    record RawHeader(String headerName) implements TraceContextExtraction {
-        public RawHeader { if (headerName == null || headerName.isBlank()) throw new IllegalArgumentException("headerName"); }
-    }
-    /** Trace id (32 hex or a traceparent string) inside the JSON payload. */
-    record PayloadPointer(JsonPointerExpr pointer) implements TraceContextExtraction {}
-
-    default boolean yieldsSpanId() { return this instanceof TraceparentHeader; }
-}
-
-public sealed interface Transform
-        permits Transform.None, Transform.Lowercase, Transform.Uppercase, Transform.Trim,
-                Transform.Sha256, Transform.Mask, Transform.RegexExtract {
-    record None() implements Transform {}
-    record Lowercase() implements Transform {}
-    record Uppercase() implements Transform {}
-    record Trim() implements Transform {}
-    /** Hex SHA-256 of the UTF-8 value; use for PII that must stay joinable but not readable. */
-    record Sha256() implements Transform {}
-    /** Keep the last N chars, replace the rest by '*'. transformArg = N (default 2). */
-    record Mask(int keepLast) implements Transform {
-        public Mask { if (keepLast < 0 || keepLast > 8) throw new IllegalArgumentException("keepLast 0..8"); }
-    }
-    /** transformArg = regex with exactly one capturing group; no match -> mapping yields no value. */
-    record RegexExtract(Pattern pattern) implements Transform {
-        public RegexExtract {
-            if (pattern.matcher("").groupCount() != 1) throw new IllegalArgumentException("regex needs exactly 1 group");
-        }
-    }
-
-    /** Builds the sealed variant from the persisted (transform, transformArg) pair. */
-    static Transform of(String name, String arg) {
-        return switch (name == null ? "NONE" : name) {
-            case "NONE" -> new None();
-            case "LOWERCASE" -> new Lowercase();
-            case "UPPERCASE" -> new Uppercase();
-            case "TRIM" -> new Trim();
-            case "SHA256" -> new Sha256();
-            case "MASK" -> new Mask(arg == null ? 2 : Integer.parseInt(arg));
-            case "REGEX_EXTRACT" -> new RegexExtract(Pattern.compile(arg));
-            default -> throw new IllegalArgumentException("unknown transform " + name);
-        };
-    }
-}
-
-public record FieldMapping(FieldSource source, JsonPointerExpr jsonPointer, String headerName,
-                           AttributeKey targetKey, AttributeType valueType, Transform transform, boolean required) {
-    public FieldMapping {
-        switch (source) {
-            case PAYLOAD -> { if (jsonPointer == null) throw new IllegalArgumentException("PAYLOAD needs jsonPointer"); }
-            case HEADER -> { if (headerName == null || headerName.isBlank()) throw new IllegalArgumentException("HEADER needs headerName"); }
-            case RECORD_KEY, RECORD_TIMESTAMP -> { /* no locator */ }
-        }
-        if (targetKey.isReservedForTcs()) throw new IllegalArgumentException("tc.* keys are reserved");
-        if (targetKey.equals(AttributeKey.SERVICE_NAME) || targetKey.equals(AttributeKey.SPAN_NAME)
-                || targetKey.equals(AttributeKey.STATUS)) throw new IllegalArgumentException("built-in key");
-        boolean stringOnly = transform instanceof Transform.Sha256 || transform instanceof Transform.Mask
-                || transform instanceof Transform.RegexExtract || transform instanceof Transform.Lowercase
-                || transform instanceof Transform.Uppercase || transform instanceof Transform.Trim;
-        if (stringOnly && valueType != AttributeType.STRING) throw new IllegalArgumentException("transform yields STRING");
-        if (source == FieldSource.RECORD_TIMESTAMP && valueType != AttributeType.LONG && valueType != AttributeType.STRING)
-            throw new IllegalArgumentException("timestamp maps to LONG (epoch ms) or STRING (ISO-8601)");
-        if (transform == null) transform = new Transform.None();
-    }
-}
-
-public record EventFilter(JsonPointerExpr jsonPointer, String equalsValue) {}
-
-public record SourceDefinition(PayloadFormat payloadFormat, TraceContextExtraction traceContext,
-                               EnrichmentScope scope, EventFilter filter, StartFrom startFrom,
-                               OnMissingTraceContext onMissingTraceContext, List<FieldMapping> fieldMappings) {
-    public SourceDefinition {
-        fieldMappings = List.copyOf(fieldMappings);
-        if (fieldMappings.isEmpty() || fieldMappings.size() > 64) throw new IllegalArgumentException("1..64 mappings");
-        var keys = new HashSet<AttributeKey>();
-        for (FieldMapping m : fieldMappings)
-            if (!keys.add(m.targetKey())) throw new IllegalArgumentException("duplicate targetKey " + m.targetKey());
-        if (scope == EnrichmentScope.SPAN && !traceContext.yieldsSpanId())
-            throw new IllegalArgumentException("SPAN scope requires TRACEPARENT_HEADER (only it carries a span id)");
-        if (payloadFormat == null) payloadFormat = PayloadFormat.JSON;
-        if (startFrom == null) startFrom = StartFrom.LATEST;
-        if (onMissingTraceContext == null) onMissingTraceContext = OnMissingTraceContext.DLQ;
-    }
-}
-```
+*Planned* (Phase 3, enricher): payload format (`JSON` only, behind a decoder SPI), an event filter (`JsonPointer` plus expected value), the start position for a new consumer group (`LATEST`/`EARLIEST`) and the policy for events without trace context (`DLQ`/`DROP`). They become further components of `EnrichmentSourceDefinition`.
 
 #### 4.7.2 Root and lifecycle
 
-```java
-package ru.aasmc.tracing.collector.domain.enrichment;
+`record EnrichmentSource(EnrichmentSourceId id, String name, KafkaConnectionId connectionId, String topic, SourceStatus status)`:
 
-import java.time.Instant;
+- `name` follows `Names` (`INVALID_NAME`: at least 3 characters of `a-z 0-9 . _ -`, starting with a letter or digit; the maximum length is `EnrichmentLimits.maxNameLength`), because it becomes part of the consumer group id;
+- `topic` follows Kafka's own rules: 1..249 characters of `a-z A-Z 0-9 . _ -`, not `.` or `..` (`INVALID_TOPIC`);
+- `moveTo(target)` follows `SourceStatus.transitionTo`: DRAFT → ACTIVE ⇄ PAUSED; DRAFT or PAUSED → DELETED; DELETED is final. An ACTIVE source is paused before it is deleted, so its consumers stop first. A forbidden step throws `INVALID_SOURCE_TRANSITION`; asking for the current status changes nothing.
 
-public enum SourceStatus { DRAFT, ACTIVE, PAUSED, DELETED }
-
-public record EnrichmentSourceId(long value) {}
-
-public record SourceRevision(EnrichmentSourceId sourceId, int revision, SourceDefinition definition,
-                             String createdBy, Instant createdAt) {
-    public SourceRevision { if (revision < 1) throw new IllegalArgumentException("revision >= 1"); }
-}
-
-public record EnrichmentSource(EnrichmentSourceId id, String name, KafkaConnectionId connectionId, String topic,
-                               SourceStatus status, int currentRevision, String createdBy) {
-
-    public EnrichmentSource {
-        if (name == null || !name.matches("[a-z0-9][a-z0-9._-]{1,62}")) throw new IllegalArgumentException("name");
-        if (topic == null || !topic.matches("[a-zA-Z0-9._-]{1,249}")) throw new IllegalArgumentException("topic");
-        if (currentRevision < 1) throw new IllegalArgumentException("a source always has >= 1 revision");
-    }
-
-    /** Consumer group in the CLIENT cluster: tc-enricher.<sourceName> (stable across revisions => offsets kept). */
-    public String consumerGroupId() { return "tc-enricher." + name; }
-
-    /** Container id in tc-enricher: changes with revision so the registry diff restarts it. */
-    public String containerId() { return "enrichment-source-" + id.value() + "-r" + currentRevision; }
-
-    public EnrichmentSource activate() {
-        return switch (status) {
-            case DRAFT, PAUSED -> withStatus(SourceStatus.ACTIVE);
-            case ACTIVE -> this;                                         // idempotent
-            case DELETED -> throw new IllegalStateException("deleted source cannot be activated");
-        };
-    }
-
-    public EnrichmentSource pause() {
-        return switch (status) {
-            case ACTIVE -> withStatus(SourceStatus.PAUSED);
-            case PAUSED -> this;
-            case DRAFT, DELETED -> throw new IllegalStateException("only ACTIVE can be paused, was " + status);
-        };
-    }
-
-    public EnrichmentSource delete() {
-        return switch (status) {
-            case DRAFT, PAUSED -> withStatus(SourceStatus.DELETED);
-            case DELETED -> this;
-            case ACTIVE -> throw new IllegalStateException("pause the source before deleting it");
-        };
-    }
-
-    public record Revised(EnrichmentSource source, int newRevision) {}
-
-    /** Any non-deleted source may get a new revision; ACTIVE ones are restarted by the registry. */
-    public Revised revise() {
-        if (status == SourceStatus.DELETED) throw new IllegalStateException("deleted source is immutable");
-        int next = currentRevision + 1;
-        return new Revised(new EnrichmentSource(id, name, connectionId, topic, status, next, createdBy), next);
-    }
-
-    private EnrichmentSource withStatus(SourceStatus s) {
-        return new EnrichmentSource(id, name, connectionId, topic, s, currentRevision, createdBy);
-    }
-}
-```
+*Planned* (Phase 3): revisions (`SourceRevision(sourceId, revision, definition, createdBy, createdAt)` and `currentRevision` on the source), `consumerGroupId()` = `tc-enricher.<name>` (stable across revisions, so offsets are kept) and `containerId()` = `enrichment-source-<id>-r<revision>` (changes with the revision, so the registry restarts the container).
 
 Invariants of the aggregate:
 
@@ -1459,6 +868,8 @@ stateDiagram-v2
 
 ### 4.8 EnrichmentRecord
 
+*Planned* (Phase 3, enricher).
+
 ```java
 package ru.aasmc.tracing.collector.domain.enrichment;
 
@@ -1488,100 +899,19 @@ One event produces one `EnrichmentRecord` per mapping that yielded a value.
 
 ### 4.9 IndexedAttribute
 
-```java
-package ru.aasmc.tracing.collector.domain.attribute;
+`record IndexedAttribute(int keyId, AttributeKey key, IndexStatus status, boolean builtIn, boolean retainedInDigest, DigestTransform digestTransform)`:
 
-import java.time.Instant;
+- rules: a built-in key is never DISABLED (`BUILT_IN_KEY`); a DISABLED key is never retained, because compaction reads `trace_attribute`, never spans (`RETAINED_KEY_MUST_BE_INDEXED`); a key that is not retained has transform NONE (`INVALID_DIGEST_TRANSFORM`);
+- `moveTo(target)` follows `IndexStatus.transitionTo`: BACKFILLING → ACTIVE; any status → DISABLED; DISABLED → BACKFILLING to enable it again (`INVALID_INDEX_TRANSITION`); the record rules above still apply, so a built-in or retained key cannot be disabled;
+- `retainInDigest(transform, sensitivity, personalDataAcknowledged)` starts retaining values: a SECRET key never in clear text (`SECRET_RETAINED_IN_CLEAR`), a PERSONAL key in clear text only when the caller acknowledges it (`PERSONAL_DATA_RETAINED_IN_CLEAR`). Not retroactive: it affects compaction of trace days that are not yet DONE.
 
-public enum OriginScope { ANY, SPAN, RESOURCE, ENRICHMENT }
-public enum IndexStatus { BACKFILLING, ACTIVE, DISABLED }
+`enum DigestTransform` with `apply(value)`:
 
-/**
- * How a retained value is written into trace_digest.attributes (ADR-13).
- * SQL equivalents used by DigestCompactor: SHA256 -> encode(sha256(convert_to(v,'UTF8')),'hex'),
- * MASK -> left(v, 2) || '***'. The Java form is used by tc-query-api to transform search values.
- */
-public enum DigestTransform {
-    NONE, SHA256, MASK;
+- `NONE` keeps the value;
+- `SHA256` gives 64 lowercase hex characters of SHA-256 over UTF-8, equal to PostgreSQL `encode(sha256(convert_to(v,'UTF8')),'hex')`, so equality search works on hashed values (the query value is hashed the same way);
+- `MASK` keeps the first two code points and appends `***` (`u-42` → `u-***`), equal to PostgreSQL `left(v, 2) || '***'`, which also counts characters, not UTF-16 units. A masked key cannot be searched in the digest.
 
-    private static final java.util.HexFormat HEX = java.util.HexFormat.of();
-
-    public String apply(String v) {
-        return switch (this) {
-            case NONE -> v;
-            case SHA256 -> {
-                try {
-                    var md = java.security.MessageDigest.getInstance("SHA-256");
-                    yield HEX.formatHex(md.digest(v.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-                } catch (java.security.NoSuchAlgorithmException e) {
-                    throw new IllegalStateException(e);   // SHA-256 is mandatory in every JDK
-                }
-            }
-            // left(v, 2) in SQL counts characters, so the Java side must not split a surrogate pair either
-            case MASK -> v.substring(0, v.offsetByCodePoints(0, Math.min(2, v.codePointCount(0, v.length())))) + "***";
-        };
-    }
-
-    /** EQ/IN on a SHA256 key can be answered (hash the query value); MASK destroys the value, so only NONE/SHA256. */
-    public boolean searchableByEquality() { return this != MASK; }
-}
-
-public record IndexedAttribute(int keyId, AttributeKey key, OriginScope originScope, boolean numeric,
-                               IndexStatus status, Instant indexedSince, boolean builtIn,
-                               boolean retainInDigest, DigestTransform digestTransform) {
-
-    public IndexedAttribute {
-        if (builtIn && status == IndexStatus.DISABLED) throw new IllegalArgumentException("built-in keys cannot be disabled");
-        if (digestTransform == null) digestTransform = DigestTransform.NONE;
-        // A retained key MUST be indexed: compaction reads trace_attribute, never spans.
-        if (retainInDigest && status == IndexStatus.DISABLED)
-            throw new IllegalArgumentException("a DISABLED key cannot be retained in the digest");
-        if (!retainInDigest && digestTransform != DigestTransform.NONE)
-            throw new IllegalArgumentException("digestTransform is meaningful only for retained keys");
-    }
-
-    /** Not retroactive: affects compaction of trace days that are not yet DONE. */
-    public IndexedAttribute retain(DigestTransform transform) {
-        if (status == IndexStatus.DISABLED) throw new IllegalStateException("re-enable the key first");
-        return new IndexedAttribute(keyId, key, originScope, numeric, status, indexedSince, builtIn, true, transform);
-    }
-
-    public IndexedAttribute stopRetaining() {
-        return new IndexedAttribute(keyId, key, originScope, numeric, status, indexedSince, builtIn, false, DigestTransform.NONE);
-    }
-
-    public boolean writtenByIngest() { return status != IndexStatus.DISABLED; } // BACKFILLING keys are already written for new data
-
-    public boolean acceptsOrigin(AttributeOrigin origin) {
-        return switch (originScope) {
-            case ANY -> origin != AttributeOrigin.DERIVED || builtIn;
-            case SPAN -> origin == AttributeOrigin.SPAN;
-            case RESOURCE -> origin == AttributeOrigin.RESOURCE;
-            case ENRICHMENT -> origin == AttributeOrigin.ENRICHMENT;
-        };
-    }
-
-    public IndexedAttribute backfillCompleted() {
-        if (status != IndexStatus.BACKFILLING) throw new IllegalStateException("not backfilling");
-        return new IndexedAttribute(keyId, key, originScope, numeric, IndexStatus.ACTIVE, indexedSince, builtIn,
-                retainInDigest, digestTransform);
-    }
-
-    /** Disabling also stops retention: without trace_attribute rows compaction has nothing to copy. */
-    public IndexedAttribute disable() {
-        if (builtIn) throw new IllegalStateException("built-in");
-        return new IndexedAttribute(keyId, key, originScope, numeric, IndexStatus.DISABLED, indexedSince, builtIn,
-                false, DigestTransform.NONE);
-    }
-
-    /** Re-enabling starts a new backfill; indexed_since moves to now. */
-    public IndexedAttribute reEnable(Instant now) {
-        if (status != IndexStatus.DISABLED) throw new IllegalStateException("not disabled");
-        return new IndexedAttribute(keyId, key, originScope, numeric, IndexStatus.BACKFILLING, now, builtIn,
-                false, DigestTransform.NONE);
-    }
-}
-```
+*Planned* (Phase 2, with backfill and the index writer): `originScope` (`ANY`, `SPAN`, `RESOURCE`, `ENRICHMENT`), `numeric`, `indexedSince` and the resumable `backfillCursor`.
 
 ```mermaid
 stateDiagram-v2
@@ -1603,11 +933,11 @@ stateDiagram-v2
     end note
 ```
 
-Backfill progress is stored in `indexed_attribute.backfill_cursor timestamptz`, the lower bound of the oldest span partition already backfilled. This column is an **addition** to the brief's `indexed_attribute` definition. It makes `AttributeBackfill` resumable after a `tc-maintenance` leader change (UC-07, SD-09). The domain record exposes it as `Instant backfillCursor` (omitted above for brevity).
+Backfill progress is stored in `indexed_attribute.backfill_cursor timestamptz`, the lower bound of the oldest span partition already backfilled. This column is an **addition** to the brief's `indexed_attribute` definition. It makes `AttributeBackfill` resumable after a `tc-maintenance` leader change (UC-07, SD-09).
 
 **Retained keys (ADR-13).** `retain_in_digest` and `digest_transform` are new columns of `indexed_attribute` (`boolean NOT NULL DEFAULT false`, `text NOT NULL DEFAULT 'NONE' CHECK IN ('NONE','SHA256','MASK')`). Rules:
 
-- Setting `retainInDigest = true` on a key that is not indexed makes the control plane create the `indexed_attribute` row in BACKFILLING first (UC-07, UC-23).
+- Retaining a key that is not indexed makes the control plane create the `indexed_attribute` row in BACKFILLING first (UC-07, UC-23).
 - Enrichment-derived values are covered, because indexed ENRICHMENT keys are already written to `trace_attribute` (origin 3).
 - The built-ins (`service.name`, `span.name`, `status`) are not flagged: the digest carries root service, root name, service ids, error count and outcome as columns.
 - Typical IdP retained keys: `user_id` (SHA256 or NONE per policy), `client_id`, `auth.factor`, `sms.delivery.status`, `idp.auth_session_id`.
@@ -1619,7 +949,7 @@ Built-in rows (`service.name` with origin RESOURCE, `span.name` with origin DERI
 
 - one row per `(trace_id, key_id, value token)` per batch, deduplicated in memory;
 - arrays produce one row per element;
-- `value_str` is the canonical token, capped at 256 chars (a btree entry must stay well below the ~2.7 kB limit; prefix search still works on truncated values);
+- `value_str` is the canonical token, cut to `IngestLimits.maxIndexValueBytes` (default 512 bytes, without splitting a character; a btree entry must stay well below the ~2.7 kB limit; prefix search still works on cut values) and flagged `INDEX_VALUE_TRUNCATED`;
 - `value_num` is filled only when the key is registered `numeric = true` and the value is LONG or DOUBLE (or a parseable STRING);
 - `ts` is the span start (SPAN and RESOURCE origin), the span start of the root (DERIVED), or `observed_at` (ENRICHMENT).
 
@@ -1691,7 +1021,7 @@ The roles mean the following:
   An alias observed *before* any primary value still creates a provisional operation with `display_value = NULL`, so the result does not depend on arrival order. The provisional operation is merged later (UC-10).
 - **step_label** names the business step evidenced by the key, e.g. `authentication` for the session key and `token-exchange` for the code. The timeline shows the label of the key that linked each trace.
 - **merge_window** (default `1 day`). An observation can join an existing operation only if its `observed_at` lies within `[first_seen - window, last_seen + window]` of that operation. Otherwise the value is treated as **reused** (e.g. a recycled session id the next day). A new operation is created and `correlation_value` is repointed to it.
-- **Size limit.** A merge is refused when the merged operation would hold more than `OperationMergePolicy.maxTracesPerOperation` traces (configured; default 10 000). This protects against keys misconfigured as correlation keys, e.g. `client_id`, which would otherwise glue millions of traces together. The trace that would have caused the merge is left unlinked and the refusal is reported (`RefusedMerge`, metric `tc_correlation_merge_refused_total`). The limit guards merges only: one operation may still grow beyond it by extension.
+- **Size limit.** A merge is refused when the merged operation would hold more than `OperationMergePolicy.maxTracesPerOperation` traces (configured; default 10 000). This protects against keys misconfigured as correlation keys, e.g. `client_id`, which would otherwise glue millions of traces together. Nothing is merged and the refusal is reported (`RefusedMerge`, metric `tc_correlation_merge_refused_total`). The trace that would have caused the merge carries a value of each operation, so each of them counts it; its values without an operation stay without one, and a later run of the same trace is refused again. The merge count is exact for the trace being linked (the operations that already count it are subtracted); a trace counted by two operations after a refusal is counted twice if another trace merges them later, so a count is never too low. The limit guards merges only: one operation may still grow beyond it by extension.
 
 A single attribute key may belong to several business operation definitions (`UNIQUE (operation_definition_id, key_id)` only).
 
@@ -1731,8 +1061,8 @@ public final class OperationLinker { ... }
 1. Reads `trace_correlation WHERE id > :watermark ORDER BY id LIMIT 10 000`.
 2. Loads the `LinkingInput`: the new observations, the earlier observations of the same traces (index `(trace_id)`), and the current live operation of every value involved (`correlation_value` joined to `business_operation`).
 3. Calls `OperationLinker.link`. It links the traces of the batch one at a time, in the order of their earliest new observation (ties by value, then trace id), exactly as if each trace came in a run of its own, on a working copy of the input. For each trace:
-   - a value **keeps** its current operation if the trace carried it within that operation's merge window; a value outside the window that the trace carries for the first time is **reused** and starts a new operation; a value outside the window that the trace already carried in an earlier run was **reused since** by another operation and is left out, so a late fragment of an old trace never takes a value away from the operation that uses it now;
-   - no operation kept: create one; one: extend it; several: merge them into the survivor unless the merged operation would exceed the size limit (then the trace changes nothing and the refusal is reported);
+   - a value **can join** the operation it is mapped to if the trace carried it within that operation's merge window; a value mapped to an operation outside the window that the trace carries for the first time was **recycled** and is treated like a new value; one that the trace already carried in an earlier run was **taken over** by a newer operation since then and is left out, so a late fragment of an old trace never takes a value away from the operation that uses it now;
+   - no operation kept: create one; one: extend it; several: merge them into the survivor unless the merged operation would exceed the size limit (then nothing is merged or mapped, every operation that does not count the trace yet counts it, and the refusal is reported);
    - the trace's values are mapped to the resulting operation; `trace_count` grows by 1 unless an earlier observation of the trace already links it to one of the operations, so a replay does not inflate it.
 4. Persists the `LinkingResult` in one transaction: created operations, updated operations, operations marked `merged_into = survivor` (an operation created and merged in the same run is never written), changed `correlation_value` rows, and every other `correlation_value` of a merged operation repointed to its survivor, so the persisted forest always has **depth ≤ 1**.
 5. Advances `correlation_resolver_state.last_processed_id` in the same transaction.
@@ -1774,6 +1104,10 @@ stateDiagram-v2
 
 ### 4.12 RetentionPolicy and ConfigRevision
 
+`record RetentionTiers(int fullDataDays, int digestDays)` is implemented: full data is kept at least `MIN_FULL_DATA_DAYS` = 2 days, so yesterday is never deleted before it is digested (`FULL_DATA_DAYS_TOO_SMALL`); `digestDays >= 0`, 0 meaning no digest (`INVALID_DIGEST_DAYS`); `requireFullDataOutlives(mergeWindow)` requires `mergeWindow <= fullDataDays - 1 day`, because traces are linked while their full data still exists (`FULL_DATA_DAYS_BELOW_MERGE_WINDOW`); `fullDataRetention()` gives `fullDataDays` as a duration. There is no default in code: the seed migration writes the configured values (`tc.retention.full-days=7`, `tc.retention.digest-days=90`).
+
+*Planned* (Phase 2, partitions; Phase 3, configuration snapshot): `RetentionPolicy`, `RetentionTier`, `Granularity`, `ConfigRevision`, and `RetentionTiers.digestEnabled()` / `digestDropAge()` when the drop gate needs them.
+
 ```java
 package ru.aasmc.tracing.collector.domain.config;
 
@@ -1809,41 +1143,12 @@ public record RetentionPolicy(String tableName, RetentionTier tier, Duration ret
      */
     public static void validateSet(Map<String, RetentionPolicy> all, RetentionTiers tiers) {
         for (RetentionPolicy p : all.values()) {
-            Duration expected = p.tier() == RetentionTier.FULL ? tiers.fullRetention() : tiers.digestDropAge();
+            Duration expected = p.tier() == RetentionTier.FULL ? tiers.fullDataRetention() : tiers.digestDropAge();
             if (p.tableName().equals("business_operation")) continue;   // MONTH grain, dropped by the drop gate
             if (!p.retention().equals(expected))
                 throw new IllegalArgumentException(p.tableName() + " must have the retention of tier " + p.tier());
         }
     }
-}
-
-/**
- * Two-tier retention (ADR-13). FULL tier kept fullDays (n); DIGEST tier kept digestDays (m) AFTER the full tier,
- * i.e. a digest day is dropped when older than n + m days. Changed only via PUT /api/v1/admin/retention-policies/tiers.
- */
-public record RetentionTiers(int fullDays, int digestDays) {
-    public static final int MIN_FULL_DAYS = 2;
-
-    public RetentionTiers {
-        if (fullDays < MIN_FULL_DAYS)
-            throw new IllegalArgumentException("fullDays >= 2 (compaction needs a whole closed day plus slack)");
-        if (digestDays < 0) throw new IllegalArgumentException("digestDays >= 0 (0 = digest disabled)");
-    }
-
-    /** Seed defaults; Spring properties tc.retention.full-days / tc.retention.digest-days are read by the seed migration only. */
-    public static final RetentionTiers DEFAULT = new RetentionTiers(7, 90);
-
-    /** fullDays must exceed every correlation merge window (rounded up to days): a value may re-join an operation until then. */
-    public void requireLongerThan(Duration maxMergeWindow) {
-        long windowDays = (maxMergeWindow.toSeconds() + 86_399) / 86_400;   // round up
-        if (fullDays <= windowDays)
-            throw new IllegalArgumentException("fullDays must be > max correlation merge_window (" + windowDays + " d)");
-    }
-
-    public boolean digestEnabled() { return digestDays > 0; }
-    public Duration fullRetention() { return Duration.ofDays(fullDays); }
-    /** Age at which a digest partition is dropped: n + m days (default 97). */
-    public Duration digestDropAge() { return Duration.ofDays((long) fullDays + digestDays); }
 }
 
 public record ConfigRevision(long value) implements Comparable<ConfigRevision> {
@@ -1873,6 +1178,8 @@ Changing `partition_granularity` affects only partitions created *after* the cha
 
 ### 4.13 DLQ record
 
+*Planned* (Phase 2, DLQ publisher). The enrichment reasons are the implemented `Extraction` outcomes: `NoTraceContext` and the `ExtractionFailure` names.
+
 ```java
 package ru.aasmc.tracing.collector.domain.dlq;
 
@@ -1881,7 +1188,7 @@ public enum DeadLetterReason {
     MALFORMED_JSON, UNSUPPORTED_SCHEMA_VERSION, INVALID_TRACE_ID, INVALID_SPAN_ID, TRACE_ID_MISMATCH,
     FUTURE_TIMESTAMP, FRAGMENT_TOO_LARGE, INVALID_ATTRIBUTE_TYPE,
     // tc-enrichment.dlq
-    NO_TRACE_CONTEXT, PAYLOAD_DECODE_ERROR, REQUIRED_FIELD_MISSING, TRANSFORM_ERROR, VALUE_TYPE_MISMATCH
+    NO_TRACE_CONTEXT, PAYLOAD_DECODE_ERROR, MISSING_REQUIRED_FIELD, TRANSFORM_FAILED, TYPE_MISMATCH
 }
 
 /** Original key/value bytes are copied unchanged; diagnostics go to headers. */
@@ -1904,30 +1211,23 @@ The digest tier keeps a compact history for m days after the n-day full tier: pe
 
 #### 4.14.1 Outcomes
 
+`enum OperationOutcome { UNKNOWN, SUCCESS, FAILED, INCOMPLETE }` is implemented in `domain.correlation`, produced by `OutcomeRule.evaluate` (§4.10.1). Its storage codes (`business_operation_digest.outcome` 0..3) belong to the persistence layer.
+
+*Planned* (Phase 3, compaction):
+
 ```java
 package ru.aasmc.tracing.collector.domain.digest;
 
-/** trace_digest.outcome smallint. */
+/** trace_digest.outcome smallint (1 = OK, 2 = ERROR, mapped by the persistence layer). */
 public enum TraceOutcome {
-    OK((short) 1), ERROR((short) 2);
-    public final short code;
-    TraceOutcome(short code) { this.code = code; }
+    OK, ERROR;
     public static TraceOutcome ofErrorCount(int errorCount) { return errorCount > 0 ? ERROR : OK; }
-}
-
-/** business_operation_digest.outcome smallint; produced by OutcomeRule.evaluate (§4.10.1). */
-public enum OperationOutcome {
-    UNKNOWN((short) 0), SUCCESS((short) 1), FAILED((short) 2), INCOMPLETE((short) 3);
-    public final short code;
-    OperationOutcome(short code) { this.code = code; }
-    public static OperationOutcome ofCode(short c) {
-        for (OperationOutcome o : values()) if (o.code == c) return o;
-        throw new IllegalArgumentException("unknown outcome " + c);
-    }
 }
 ```
 
 #### 4.14.2 TraceDigest and BusinessOperationDigest
+
+*Planned* (Phase 3, compaction).
 
 ```java
 package ru.aasmc.tracing.collector.domain.digest;
@@ -1977,7 +1277,7 @@ public record BusinessOperationDigest(LocalDate opDay, UUID operationId, int ope
             throw new IllegalArgumentException("op_day = first_seen::date (UTC)");
         steps = List.copyOf(steps);
         attributes = Map.copyOf(attributes);           // union of the members' retained attributes
-        if (outcomeDetail != null && outcomeDetail.length() > 256) throw new IllegalArgumentException("outcome_detail <= 256");
+        // outcomeDetail is OutcomeEvaluation.decidingValue, already cut to CorrelationLimits.maxDecidingValueLength
     }
 }
 ```
@@ -1994,21 +1294,22 @@ package ru.aasmc.tracing.collector.domain.digest;
 import java.time.Instant;
 import java.time.LocalDate;
 
-/** Row of tc.compaction_exclusion: roots matching it are not digested unless the trace belongs to a business operation. */
+/** Planned. Row of tc.compaction_exclusion: roots matching it are not digested unless the trace belongs to a business operation. */
 public record CompactionExclusion(int id, String serviceName /* null = any service */, String rootNamePattern /* SQL LIKE */,
                                   String description, String createdBy, Instant createdAt) {
     public CompactionExclusion {
-        if (rootNamePattern == null || rootNamePattern.isBlank() || rootNamePattern.length() > 256)
-            throw new IllegalArgumentException("rootNamePattern 1..256 chars");
+        if (rootNamePattern == null || rootNamePattern.isBlank())
+            throw new IllegalArgumentException("rootNamePattern required");     // its length limit is configured
         if (rootNamePattern.equals("%") && serviceName == null)
             throw new IllegalArgumentException("excluding every trace: set digestDays = 0 instead");
     }
 }
 
-public enum DigestStatus { PENDING, RUNNING, DONE, FAILED }   // PENDING -> RUNNING -> DONE; RUNNING -> FAILED -> RUNNING
+/** Implemented. PENDING -> RUNNING -> DONE; RUNNING -> FAILED -> RUNNING; transitionTo answers a Transition. */
+public enum DigestStatus { PENDING, RUNNING, DONE, FAILED }
 
 /**
- * Row of tc.compaction_state; written only by the DigestCompactor leader (ShedLock digest-compactor).
+ * Implemented. Row of tc.compaction_state; written only by the DigestCompactor leader (ShedLock digest-compactor).
  * Rules: tracesDigested >= 0; digestedUntil lies within the day; finishedAt only when DONE, failureReason only when FAILED.
  */
 public record DigestProgress(LocalDate traceDay, DigestStatus status, Instant digestedUntil, long tracesDigested,
@@ -2135,12 +1436,12 @@ classDiagram
     class OutcomeRule {
         +AttributeKey outcomeKey
         +String finalStepLabel
-        +evaluate(List~MemberTrace~) Evaluation
+        +evaluate(List~MemberTrace~, int) OutcomeEvaluation
     }
     class TraceSummary
     class BusinessOperation
     class IndexedAttribute {
-        +boolean retainInDigest
+        +boolean retainedInDigest
         +DigestTransform digestTransform
     }
     TraceDigest --> TraceOutcome
@@ -2159,7 +1460,7 @@ classDiagram
 
 ## 5. Domain events
 
-Domain events are **internal, in-process facts**. They are published with Spring's `ApplicationEventPublisher` and consumed by `@TransactionalEventListener(phase = AFTER_COMMIT)` handlers. Those handlers:
+*Planned* (each event is added with the service that raises it). Domain events are **internal, in-process facts**. They are published with Spring's `ApplicationEventPublisher` and consumed by `@TransactionalEventListener(phase = AFTER_COMMIT)` handlers. Those handlers:
 
 - update Micrometer metrics;
 - write structured logs and audit;
@@ -2196,8 +1497,8 @@ record FragmentDeadLettered(Instant occurredAt, String reason, int partition, lo
 record SpansDropped(Instant occurredAt, String reason, int count) implements DomainEvent {}       // EXPIRED, TRACE_TOO_LARGE
 record EnrichmentApplied(Instant occurredAt, long sourceId, int revision, String traceIdHex, List<String> keys) implements DomainEvent {}
 record EnrichmentEventRejected(Instant occurredAt, long sourceId, String reason, boolean deadLettered) implements DomainEvent {}
-record CorrelationObserved(Instant occurredAt, int typeId, int keyId, String traceIdHex, short origin) implements DomainEvent {}
-record BusinessOperationCreated(Instant occurredAt, UUID operationId, int typeId, boolean provisional) implements DomainEvent {}
+record CorrelationObserved(Instant occurredAt, int operationDefinitionId, int keyId, String traceIdHex, short origin) implements DomainEvent {}
+record BusinessOperationCreated(Instant occurredAt, UUID operationId, int operationDefinitionId, boolean provisional) implements DomainEvent {}
 record TraceJoinedBusinessOperation(Instant occurredAt, UUID operationId, String traceIdHex) implements DomainEvent {}
 record BusinessOperationMerged(Instant occurredAt, UUID survivorId, List<UUID> mergedIds, int traceCount) implements DomainEvent {}
 record EnrichmentSourceActivated(Instant occurredAt, long sourceId, int revision, String actor) implements DomainEvent {}
@@ -2212,11 +1513,11 @@ record PartitionCreated(Instant occurredAt, String table, String partition) impl
 record PartitionDropped(Instant occurredAt, String table, String partition) implements DomainEvent {}
 record TraceDayCompacted(Instant occurredAt, java.time.LocalDate traceDay, long tracesDigested, long tracesExcluded,
                          java.time.Duration elapsed) implements DomainEvent {}
-record BusinessOperationCompacted(Instant occurredAt, UUID operationId, int typeId, short outcome,
+record BusinessOperationCompacted(Instant occurredAt, UUID operationId, int operationDefinitionId, short outcome,
                                   int traceCount) implements DomainEvent {}
 record PartitionDropDeferred(Instant occurredAt, String table, String partition,
                              java.time.LocalDate blockingTraceDay) implements DomainEvent {}   // drop gate closed
-record RetentionTiersChanged(Instant occurredAt, int fullDays, int digestDays, String actor) implements DomainEvent {}
+record RetentionTiersChanged(Instant occurredAt, int fullDataDays, int digestDays, String actor) implements DomainEvent {}
 ```
 
 | Event | Raised by (service, component) | Typical consumers |
@@ -2229,7 +1530,7 @@ record RetentionTiersChanged(Instant occurredAt, int fullDays, int digestDays, S
 | EnrichmentSource* / IndexedAttribute* / ConfigRevisionBumped | `tc-control-plane` services | audit log (who/when/what); `tc-maintenance` AttributeBackfill (polls status, not the event) |
 | PartitionCreated / Dropped | `tc-maintenance` PartitionManager | metrics `tc_partitions_ahead_hours`, audit |
 | TraceDayCompacted | `tc-maintenance` DigestCompactor (after the last chunk of a day commits) | metrics `tc_compaction_traces_total{result=digested\|excluded}`, `tc_compaction_lag_days`; log |
-| BusinessOperationCompacted | `tc-maintenance` DigestCompactor (operation phase) | metrics per type and outcome; audit not required |
+| BusinessOperationCompacted | `tc-maintenance` DigestCompactor (operation phase) | metrics per definition and outcome; audit not required |
 | PartitionDropDeferred | `tc-maintenance` PartitionManager (drop gate closed) | metric `tc_compaction_lag_days`, alert when > 1 day; log naming the blocking trace day |
 | RetentionTiersChanged | `tc-control-plane` (UC-23) | audit log; PartitionManager and DigestCompactor read the new values from `retention_policy` on their next run |
 
@@ -2268,10 +1569,10 @@ Audit events from the control plane are additionally written as structured JSON 
 | `parentSpanContext.*` | `SpanFlag.PARENT_REMOTE` | `span.flags` bit 0x04 | Only `remote` is kept, which tells whether the parent was in another process. The rest is **dropped**: it duplicates `parentSpanId`/`traceId`, and the context is invalid for roots. |
 | `status.code` | `StatusCode` | `span.status_code` smallint | UNSET 0, OK 1, ERROR 2. ERROR adds `trace_attribute(status=ERROR, origin DERIVED)` once per trace per batch. |
 | `status.description` | `SpanStatus.message` | `span.status_message` | `""` → NULL. |
-| `attributes` | `Attributes` | `span.attributes` jsonb (compact) | Indexed keys go to `trace_attribute` (origin SPAN). Correlation keys go to `trace_correlation` (origin SPAN). Strings over 4 KiB are truncated and flagged with 0x01. LONG is parsed as long. |
+| `attributes` | `Attributes` | `span.attributes` jsonb (compact) | Indexed keys go to `trace_attribute` (origin SPAN). Correlation keys go to `trace_correlation` (origin SPAN). Strings over `AttributeLimits.maxValueBytes` (default 4 KiB) are truncated and flagged with 0x01. LONG is parsed as long. |
 | `events[]` | `SpanEvent` | `span.events` jsonb | `[{"name","time","attributes","dropped"}]` (04 §5.5): `time` is the epoch-nanos string, `dropped` appears only when > 0. More than 128 events are truncated with flag 0x08 (`EVENTS_OR_LINKS_TRUNCATED`). NULL if empty. |
 | `events[].totalAttributeCount` | — | — | **Dropped** (equal to size + dropped). |
-| `links[]` | `SpanLinkRef` | `span.links` jsonb **and** `span_link` rows | Each link gives a `span_link(trace_id, span_id, start_time, linked_trace_id, linked_span_id, attributes)` row, written only for inserted spans. |
+| `links[]` | `SpanLink` | `span.links` jsonb **and** `span_link` rows | Each link gives a `span_link(trace_id, span_id, start_time, linked_trace_id, linked_span_id, attributes)` row, written only for inserted spans. |
 | `links[].spanContext.{sampled,valid,remote,traceFlags}` | — | — | **Dropped**, except `traceState` (kept in the jsonb). |
 | `hasEnded` | `SpanFlag.NOT_ENDED` | `span.flags` bit 0x02 when false | Normally true. |
 | `totalAttributeCount`, `totalRecordedEvents`, `totalRecordedLinks` | — | — | **Dropped**, derivable as size + dropped. |
@@ -2331,30 +1632,14 @@ TCS **does not resolve conflicts**. It keeps every value with its origin:
 4. The UI shows both. The span panel lists the span value. The "Enrichment" panel lists the enrichment value as `sms.provider = smsc-1 (sms-gateway.delivery-reports r3, 2026-11-21T09:15:09Z)`. When both exist, the trace header shows a "conflicting values" badge.
 5. Several enrichment values for the same key and trace (e.g. `SENT` then `DELIVERED`) are all kept. The *current* value is the one with max `(observed_at, kafka_partition, kafka_offset)`. The API returns `current` plus `history`.
 
-### 7.3 PII classification of keys
+### 7.3 Sensitive keys
 
-```java
-package ru.aasmc.tracing.collector.domain.attribute;
+`enum Sensitivity { NONE, PERSONAL, SECRET }`, from least to most sensitive: NONE is shown to every `TC_VIEWER`; PERSONAL only with scope `TC_PII`; SECRET is always masked, even with `TC_PII`, and usable for `EQ` search and correlation only.
 
-public enum PiiClass {
-    NONE,       // shown to every TC_VIEWER
-    PERSONAL,   // shown only with scope TC_PII; masked otherwise ("u-**")
-    SECRET      // always masked in UI/API, even with TC_PII; usable for search EQ and correlation only
-}
+`final class SensitivityPolicy`, built from `Map<String, Sensitivity>` rules whose keys are exact attribute keys (`user_id`) or patterns with `*` for any characters (`*.phone`):
 
-public record PiiPolicy(java.util.Map<String, PiiClass> exact, java.util.List<java.util.Map.Entry<java.util.regex.Pattern, PiiClass>> patterns) {
-    public PiiClass classify(AttributeKey key) {
-        PiiClass c = exact.get(key.value());
-        if (c != null) return c;
-        for (var e : patterns) if (e.getKey().matcher(key.value()).matches()) return e.getValue();
-        return PiiClass.NONE;
-    }
-    public static String mask(String v) {
-        if (v.length() <= 2) return "**";
-        return v.substring(0, Math.min(2, v.length() / 3)) + "**";
-    }
-}
-```
+- `sensitivityOf(key)`: an exact rule wins over a pattern; of several matching patterns the most sensitive class wins; keys without a rule are NONE; patterns are compiled once, when the policy is built;
+- `displayValue(key, value, callerMaySeePersonalData)`: SECRET values are always masked, PERSONAL values unless the caller may see personal data, others are shown as they are. Masking is `DigestTransform.MASK` (`u-42` → `u-***`).
 
 - The classification is **configuration of the Query context**, not of the data model: property `tc.security.pii.keys` in `tc-query-api`. Masking is a presentation concern and the data stays raw, because correlation and search need it.
 - Baseline:
@@ -2362,7 +1647,7 @@ public record PiiPolicy(java.util.Map<String, PiiClass> exact, java.util.List<ja
   - `oauth.authorization_code`, `*.token`, `*.password`, `*.secret` are `SECRET`.
 - Masking applies to every place a value is returned: span attributes, resource attributes, enrichment values, matched attributes in search results, correlation values and business-operation display values (when the PRIMARY key is PII).
 - Viewers without `TC_PII` may still search a PERSONAL key with `EQ` (they already know the value). `PREFIX` and the value-autocomplete endpoint are forbidden for them (`403`), which prevents enumeration.
-- **PII in the digest tier (ADR-13).** Retained values live n + m days (default 97) instead of n, so each retained PERSONAL or SECRET key should carry a `digest_transform`: `SHA256` keeps it joinable and searchable by `EQ`/`IN` (`tc-query-api` hashes the query value with `DigestTransform.apply`), `MASK` keeps only a recognisable prefix (`u-***`) and makes the key unsearchable in the digest. Masking by `PiiClass` still applies on read: a hashed PERSONAL value is shown only with `TC_PII` (otherwise `16**`). The control plane refuses a PERSONAL key retained with `NONE` unless the admin sets `acknowledgePii = true` (`PII_RETAINED_IN_CLEAR`), and always refuses a SECRET key retained with `NONE` (`SECRET_KEY_REQUIRES_TRANSFORM`) (UC-23).
+- **PII in the digest tier (ADR-13).** Retained values live n + m days (default 97) instead of n, so each retained PERSONAL or SECRET key should carry a `digest_transform`: `SHA256` keeps it joinable and searchable by `EQ`/`IN` (`tc-query-api` hashes the query value with `DigestTransform.apply`), `MASK` keeps only a recognisable prefix (`u-***`) and makes the key unsearchable in the digest. Masking by `Sensitivity` still applies on read: a hashed PERSONAL value is shown only with `TC_PII` (otherwise `16***`). `IndexedAttribute.retainInDigest` refuses a PERSONAL key retained with `NONE` unless the admin acknowledges it (`acknowledgePii = true`, else `PERSONAL_DATA_RETAINED_IN_CLEAR`), and always refuses a SECRET key retained with `NONE` (`SECRET_RETAINED_IN_CLEAR`) (UC-23).
 - Producers are advised to avoid SECRET values entirely, or to hash them at the source. An enrichment source can apply the `SHA256` transform; a producer can use `@TraceAttribute(key = "oauth.authorization_code", value = "...hash expression...")`. Correlation works equally well on hashes, as long as every producer applies the same hash.
 
 ### 7.4 Other invariants worth stating once

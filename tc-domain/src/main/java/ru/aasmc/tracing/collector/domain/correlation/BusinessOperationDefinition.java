@@ -9,7 +9,7 @@ import ru.aasmc.tracing.collector.domain.ViolationCode;
 
 /**
  * The definition of one kind of business operation, written by an admin: which attribute values link its traces, how
- * far apart in time they may be, and how its outcome is judged. It is configuration with rules, not a Java type.
+ * far apart in time they may be, and how its outcome is judged.
  *
  * <p>Example {@code idp.login}: one login is three requests, each its own trace (password check, SMS code check, token
  * exchange). The definition says:
@@ -29,7 +29,7 @@ import ru.aasmc.tracing.collector.domain.ViolationCode;
  * ({@code INVALID_MERGE_WINDOW}); at least one PRIMARY key, no key id twice and no attribute twice
  * ({@code INVALID_OPERATION_DEFINITION});
  * the outcome rule's {@code finalStepLabel}, if set, is the step label of one of the keys ({@code UNKNOWN_STEP_LABEL});
- * keys are an immutable copy, in business order. Name length, merge-window bounds and the sizes of keys and outcome
+ * keys are an immutable copy, in the order their steps happen. Name length, merge-window bounds and the sizes of keys and outcome
  * rule are configured in {@link CorrelationLimits}.
  *
  * @param id id of the definition

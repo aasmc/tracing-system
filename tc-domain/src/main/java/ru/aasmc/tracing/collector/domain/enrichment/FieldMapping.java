@@ -113,7 +113,10 @@ public record FieldMapping(
                 .requiredIf(required);
     }
 
-    /** Step 1. Headers and the record key are text; the record timestamp is epoch milliseconds or ISO-8601 text. */
+    /**
+     * The value at the place this mapping reads from, or empty if the event has none there. Headers and the record key
+     * are read as text; the record timestamp as epoch milliseconds (LONG mapping) or ISO-8601 text (STRING mapping).
+     */
     private Optional<JsonScalar> rawValue(EnrichmentEvent event) {
         return switch (source) {
             case PAYLOAD -> event.payloadValue(jsonPointer);
@@ -129,7 +132,7 @@ public record FieldMapping(
                 : new StringScalar(timestamp.toString());
     }
 
-    /** Step 2 for STRING: the text of the raw value, transformed and cut to the size limit. */
+    /** A STRING value: the text of the raw value, transformed and cut to {@code maxValueBytes}. */
     private FieldReading<AttributeValue> transformedString(JsonScalar raw, int maxValueBytes) {
         return transform
                 .apply(textOf(raw))
@@ -138,7 +141,7 @@ public record FieldMapping(
                 .orElseGet(() -> FieldReading.failed(ExtractionFailure.TRANSFORM_FAILED));
     }
 
-    /** Step 2 for BOOLEAN, LONG and DOUBLE. */
+    /** A BOOLEAN, LONG or DOUBLE value converted from the raw value, or {@code TYPE_MISMATCH} if it does not convert. */
     private FieldReading<AttributeValue> typed(JsonScalar raw) {
         Optional<AttributeValue> value = switch (valueType) {
             case BOOLEAN -> booleanOf(raw).map(BoolValue::new);

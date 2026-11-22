@@ -10,7 +10,10 @@ public enum DigestStatus {
     DONE,
     FAILED;
 
-    /** Asking for the current status is {@code Unchanged}; a forbidden step is rejected with {@code INVALID_DIGEST_TRANSITION}. */
+    /**
+     * Whether this status may change to {@code target}: {@code Unchanged} if {@code target} is the current status,
+     * {@code Changed} if the step is allowed, otherwise {@code Rejected} with {@code INVALID_DIGEST_TRANSITION}.
+     */
     public Transition<DigestStatus> transitionTo(DigestStatus target) {
         boolean allowed = switch (this) {
             case PENDING, FAILED -> target == RUNNING;

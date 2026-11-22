@@ -3,8 +3,9 @@ package ru.aasmc.tracing.collector.domain;
 import java.time.Duration;
 
 /**
- * Checks of configured limits. A broken limit is a configuration error, not a broken business rule, so it is reported
- * as {@link IllegalArgumentException}.
+ * Checks that a configured limit, such as a maximum length or a time window, is positive. A broken limit is a mistake
+ * in the configuration, not a broken business rule, so it is reported as a plain {@link IllegalArgumentException}
+ * naming the setting.
  */
 public final class Limits {
 

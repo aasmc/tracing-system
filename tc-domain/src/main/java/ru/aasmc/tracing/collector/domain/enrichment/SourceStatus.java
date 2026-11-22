@@ -13,7 +13,10 @@ public enum SourceStatus {
     PAUSED,
     DELETED;
 
-    /** Asking for the current status is {@code Unchanged}; a forbidden step is rejected with {@code INVALID_SOURCE_TRANSITION}. */
+    /**
+     * Whether this status may change to {@code target}: {@code Unchanged} if {@code target} is the current status,
+     * {@code Changed} if the step is allowed, otherwise {@code Rejected} with {@code INVALID_SOURCE_TRANSITION}.
+     */
     public Transition<SourceStatus> transitionTo(SourceStatus target) {
         boolean allowed = switch (this) {
             case DRAFT, PAUSED -> target == ACTIVE || target == DELETED;

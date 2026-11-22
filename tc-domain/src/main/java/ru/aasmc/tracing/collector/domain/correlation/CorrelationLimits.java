@@ -54,6 +54,8 @@ public record CorrelationLimits(
     }
 
     /**
+     * Checks that the definition stays within these limits: name length, merge window, step labels and outcome values.
+     *
      * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_NAME} for a too long name,
      *     {@code INVALID_MERGE_WINDOW} for a window outside the bounds, {@code INVALID_OPERATION_DEFINITION} for a too long
      *     step label (the outcome rule's final step is one of them), {@code INVALID_OUTCOME_RULE} for too many or too long
@@ -77,7 +79,12 @@ public record CorrelationLimits(
         requireOutcomeValuesWithin(definition.outcomeRule().failureValues());
     }
 
-    /** @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_CORRELATION_VALUE} for a too long value */
+    /**
+     * Checks that the observed value is not longer than allowed.
+     *
+     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_CORRELATION_VALUE} for a too
+     *     long value
+     */
     public void requireWithin(CorrelationObservation observation) {
         require(
                 observation.value().length() <= maxCorrelationValueLength,

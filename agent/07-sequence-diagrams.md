@@ -346,7 +346,7 @@ sequenceDiagram
     CP-->>UI: 201 id=3, connectivity ok
     ADM->>UI: New enrichment source (definition JSON)
     UI->>CP: POST /enrichment-sources (name, connectionId 3, topic, definition)
-    CP->>CP: validate SourceDefinition (mappings, pointers, SPAN needs TRACEPARENT_HEADER)
+    CP->>CP: validate EnrichmentSourceDefinition (mappings, pointers, SPAN needs TRACEPARENT_HEADER)
     CP->>CK: AdminClient.describeTopics(sms-gateway.delivery-reports)
     alt topic missing or DESCRIBE denied
         CK-->>CP: UnknownTopicOrPartition / TopicAuthorizationException
@@ -646,7 +646,7 @@ sequenceDiagram
     QA-->>QA: respond with A plus mergedFrom [B]
 ```
 
-**Explanation.** The arrival order of fragments across partitions is not controllable. A provisional operation is created for an alias seen alone, and union-find merges it when a bridging trace appears.
+**Explanation.** The arrival order of fragments across partitions is not controllable. A provisional operation is created for an alias seen alone, and the linker merges it when a bridging trace appears.
 
 The deterministic survivor rule is: has a display value, then earlier `first_seen`, then smaller id. Together with path compression it makes the final state independent of processing order.
 
@@ -1095,7 +1095,7 @@ sequenceDiagram
     alt lock held elsewhere
         SL-->>DC: not acquired, skip
     else acquired
-        DC->>PG: load config snapshot: retained keys (user_id SHA256, client_id, auth.factor,<br/>sms.delivery.status, idp.auth_session_id NONE), compaction_exclusion, outcome rules, fullDays 7
+        DC->>PG: load config snapshot: retained keys (user_id SHA256, client_id, auth.factor,<br/>sms.delivery.status, idp.auth_session_id NONE), compaction_exclusion, outcome rules, fullDataDays 7
         DC->>PG: INSERT compaction_state (2026-11-21, PENDING) ON CONFLICT DO NOTHING<br/>for every day with D + 1 day <= now - 7 d
         DC->>PG: pick oldest day not DONE: 2026-11-21, UPDATE status RUNNING, started_at now
         loop 1-hour chunks of trace_summary.start_time from last_chunk_end to 2026-11-22T00:00Z
@@ -1229,13 +1229,13 @@ sequenceDiagram
     participant DC as DigestCompactor<br/>tc-maintenance
     participant PM as PartitionManager<br/>tc-maintenance
 
-    ADM->>UI: Retention tiers form: fullDays 7, digestDays 90
-    UI->>CP: PUT /api/v1/admin/retention-policies/tiers {fullDays 7, digestDays 90}
-    CP->>CP: RetentionTiers: fullDays >= 2, digestDays >= 0
+    ADM->>UI: Retention tiers form: fullDataDays 7, digestDays 90
+    UI->>CP: PUT /api/v1/admin/retention-policies/tiers {fullDataDays 7, digestDays 90}
+    CP->>CP: RetentionTiers: fullDataDays >= 2, digestDays >= 0
     CP->>PG: SELECT max(merge_window) FROM business_operation_definition (idp.login PT24H = 1 d)
-    CP->>CP: fullDays 7 > 1 d: ok
+    CP->>CP: fullDataDays 7 > 1 d: ok
     alt invalid
-        CP-->>UI: 400 FULL_DAYS_TOO_SMALL / FULL_DAYS_BELOW_MERGE_WINDOW / INVALID_DIGEST_DAYS
+        CP-->>UI: 400 FULL_DATA_DAYS_TOO_SMALL / FULL_DATA_DAYS_BELOW_MERGE_WINDOW / INVALID_DIGEST_DAYS
     else valid
         CP->>PG: BEGIN, SELECT config_revision FOR UPDATE
         CP->>PG: UPDATE retention_policy SET retention = 7 days WHERE tier = 'FULL'

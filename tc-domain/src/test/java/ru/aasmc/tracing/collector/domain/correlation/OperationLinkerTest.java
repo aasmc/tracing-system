@@ -708,14 +708,17 @@ class OperationLinkerTest {
         @DisplayName("""
                 Given O1 and O2 with 1 trace each and a size limit of 2 traces,
                 when a new trace connects them (3 traces),
-                then the merge is refused and reported with survivor, other operation and trace count,
-                and nothing else changes: no operation is updated or merged and no value is re-pointed.
+                then the merge is refused and reported with survivor, other operation and trace count;
+                nothing is merged and no value is re-pointed, but O1 and O2 each count the trace,
+                which carries a value of each of them.
                 Such a value is usually shared by unrelated traces (e.g. a constant placeholder)""")
-        void given_mergeAboveLimit_when_linked_then_refusedAndNothingChanged() {
+        void given_mergeAboveLimit_when_linked_then_refusedAndTraceCountedByBoth() {
             LinkingResult result = link(new OperationMergePolicy(2), bridge, List.of(), current);
 
             assertThat(result)
                     .isEqualTo(expected()
+                            .updated(provisional.withTraceCount(2))
+                            .updated(named.withTraceCount(2))
                             .refused(new RefusedMerge(named, provisional, 3))
                             .build());
         }
@@ -741,7 +744,35 @@ class OperationLinkerTest {
                     .containsExactlyInAnyOrder(
                             new RefusedMerge(named, provisional, 4), new RefusedMerge(named, third, 4));
             assertThat(result.merged()).isEmpty();
-            assertThat(result.updated()).isEmpty();
+            assertThat(result.updated())
+                    .containsExactlyInAnyOrder(
+                            named.withTraceCount(2), provisional.withTraceCount(2), third.withTraceCount(2));
+        }
+
+        @Test
+        @DisplayName("""
+                Given a size limit of 2 traces and trace 9, which connected O1 and O2 in an earlier run whose merge
+                was refused: O1 and O2 hold 2 traces each, trace 9 counted in both,
+                and trace 9's own new value c-9 was left without an operation,
+                when trace 9 brings another new value c-10,
+                then the merge needs 2 + 2 - 2 + 1 = 3 traces (trace 9 once) and is refused again;
+                no count changes and c-9 and c-10 stay without an operation""")
+        void given_traceCountedByBothAfterRefusal_when_moreValuesArrive_then_refusedAgain() {
+            BusinessOperation namedWithTrace9 = named.withTraceCount(2);
+            BusinessOperation provisionalWithTrace9 = provisional.withTraceCount(2);
+            List<CorrelationObservation> earlier = new ArrayList<>(bridge);
+            earlier.add(code(TRACE_9, "c-9", "09:10"));
+
+            LinkingResult result = link(
+                    new OperationMergePolicy(2),
+                    List.of(code(TRACE_9, "c-10", "09:20")),
+                    earlier,
+                    Map.of("s-1", namedWithTrace9, "c-1", provisionalWithTrace9));
+
+            assertThat(result)
+                    .isEqualTo(expected()
+                            .refused(new RefusedMerge(namedWithTrace9, provisionalWithTrace9, 3))
+                            .build());
         }
     }
 

@@ -24,6 +24,8 @@ public record AttributeLimits(int maxKeyLength, int maxValueBytes, int maxEntrie
     }
 
     /**
+     * Checks that {@code attributes} stay within these limits.
+     *
      * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code TOO_MANY_ATTRIBUTES} for more than
      *     {@code maxEntries} attributes, {@code INVALID_ATTRIBUTE_KEY} for a key longer than {@code maxKeyLength}
      */

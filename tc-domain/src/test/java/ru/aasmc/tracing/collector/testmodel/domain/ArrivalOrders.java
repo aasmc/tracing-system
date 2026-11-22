@@ -18,8 +18,9 @@ import ru.aasmc.tracing.collector.domain.correlation.CorrelationObservation;
 import ru.aasmc.tracing.collector.domain.trace.TraceId;
 
 /**
- * Arrival orders of the IdP observations. An arrival order is a list of batches; each batch is what one {@code OperationLinker} run sees.
- * However the IdP observations arrive, they must end as one operation {@code as-777} holding T1, T2 and T3.
+ * Orders in which the correlation observations of the {@link IdpScenario} login can arrive. An arrival order is a list
+ * of batches; each batch is what one {@code OperationLinker} run sees. However the observations arrive, they must end
+ * as one operation {@code as-777} holding T1, T2 and T3.
  */
 public final class ArrivalOrders {
 

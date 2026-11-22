@@ -33,8 +33,8 @@ import ru.aasmc.tracing.collector.domain.trace.TraceId;
  *   <li>T3, token exchange: the client redeems {@code code-abc}.
  * </ol>
  *
- * The business operation definition {@code idp.login} links them into one business operation: T1–T2 share the session id
- * (primary key), T2–T3 share the authorization code (alias key). An SMS gateway reports the delivery of the SMS with
+ * The business operation definition {@code idp.login} links them into one business operation: T1 and T2 share the
+ * session id (a PRIMARY correlation key), T2 and T3 share the authorization code (an ALIAS correlation key). An SMS gateway reports the delivery of the SMS with
  * a {@code traceparent} pointing at the T2 span that sent it.
  */
 public final class IdpScenario {

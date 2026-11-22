@@ -68,8 +68,8 @@ public sealed interface Transform {
 
     /**
      * Keeps the first capturing group of the first match, e.g. {@code code=(\w+)} on {@code "x code=abc y"} gives
-     * {@code abc}; no match (or a first group that took no part in the match) gives no value. The expression uses RE2 syntax, whose matching time
-     * is linear in the input, so a client-supplied pattern cannot stall the enricher.
+     * {@code abc}. No match, or a first group that took no part in the match, gives no value. The expression uses RE2
+     * syntax, whose matching time is linear in the input, so a client-supplied pattern cannot stall the enricher.
      *
      * @param regex a valid RE2 expression with at least one group
      */

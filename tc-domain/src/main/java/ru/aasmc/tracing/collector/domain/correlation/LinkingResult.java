@@ -15,7 +15,8 @@ import java.util.UUID;
  * @param updated existing operations with new bounds, display value or trace count
  * @param merged existing operations absorbed by another one (with {@code mergedInto} set)
  * @param operationByValue new or changed value mappings: the operation each of these values belongs to from now on
- * @param refusedMerges merges refused by the size limit; the traces that would have caused them were left unlinked
+ * @param refusedMerges merges that were not made because the merged operation would have held more traces than the
+ *     size limit allows; for reporting only (log, metric), since everything the run changed is in the other fields
  */
 public record LinkingResult(
         List<BusinessOperation> created,

@@ -12,19 +12,25 @@ import java.util.stream.Stream;
 import ru.aasmc.tracing.collector.domain.ViolationCode;
 
 /**
- * What one {@link OperationLinker#link} run looks at. The caller loads it from storage; the lists are immutable copies.
+ * Everything one {@link OperationLinker#link} run needs, loaded by the caller from storage. The lists are immutable
+ * copies.
  *
- * <p>Rules: observations belong to {@code definition} and use one of its keys ({@code INVALID_OPERATION_DEFINITION}); the
- * operations are live (not merged) and of {@code definition}, and values mapped to the same operation id carry the same
- * version of it ({@code INVALID_BUSINESS_OPERATION}).
+ * <p>Rules:
  *
- * @param definition the business operation definition of everything below
+ * <ul>
+ *   <li>every observation is of {@code definition} and of one of its keys ({@code INVALID_OPERATION_DEFINITION});
+ *   <li>every operation in {@code currentOperationByValue} is of {@code definition} and not merged into another one;
+ *       values that share an operation share the same copy of it, not two different versions
+ *       ({@code INVALID_BUSINESS_OPERATION}).
+ * </ul>
+ *
+ * @param definition the definition whose traces are linked
  * @param newObservations observations not linked yet
  * @param earlierObservations observations of the same traces that earlier runs already linked; they show which values a
  *     trace carried before (a session id may arrive in one run, the authorization code of the same trace in the next)
  *     and whether the trace is already counted by an operation
- * @param currentOperationByValue the current value mappings of the observations' values: the live
- *     operation each value belongs to now; values seen for the first time are absent
+ * @param currentOperationByValue for every value of the observations, the operation it belongs to now; values seen for
+ *     the first time are absent
  */
 public record LinkingInput(
         BusinessOperationDefinition definition,

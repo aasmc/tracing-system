@@ -115,6 +115,8 @@ flowchart TB
 
 ### 2.4 Key types (Java 25 sketches)
 
+> **Deviation (implementation, 2026-11-22).** The ingester uses the domain types of `tc-domain` (05 §3) instead of the local `TraceId` and `AttrValue` sketched below: `TraceId.parse`, `SpanId.parseParent`, the sealed `AttributeValue` with `StringValue.of(raw, maxBytes)`, `Span`, `TraceSummary` and the configurable `IngestLimits`. The parser types (`ParseResult`, `ParsedFragment`, …) are designed in Phase 3.
+
 ```java
 package ru.aasmc.tracing.collector.ingest.parse;
 
@@ -1327,7 +1329,7 @@ flowchart TB
         XPL["query.search<br/>CrossTierSearchPlanner"]
         PLN["query.search<br/>SearchPlanner (FULL tier)"]
         DSX["query.search<br/>DigestSearchExecutor"]
-        HSH["query.search<br/>DigestValueHasher (SHA256)"]
+        HSH["domain<br/>DigestTransform.SHA256"]
         EXE["query.search<br/>SearchExecutor"]
         BF["query.search<br/>BruteForceSearch"]
         CUR["query.search<br/>CursorCodec"]
@@ -1337,7 +1339,7 @@ flowchart TB
         REL["query.trace<br/>RelatedTracesService"]
         BOS["query.operation<br/>BusinessOperationService"]
         DIC["query.catalog<br/>DictionaryLookup (Caffeine)"]
-        MSK["query.security<br/>PiiMasker"]
+        MSK["domain<br/>SensitivityPolicy"]
         TO["query.support<br/>QueryTimeouts"]
     end
 
@@ -1597,7 +1599,7 @@ FROM tc.trace_attribute
 WHERE trace_id = ANY(:page) AND key_id = ANY(:keys) AND ts >= :from AND ts < :to_plus;
 ```
 
-The values then go through `PiiMasker`.
+The values then go through `SensitivityPolicy.displayValue`.
 
 ### 4.6 Brute-force mode (UC-13)
 
@@ -1665,7 +1667,7 @@ getTrace(traceId, start?, end?):
        PARTIALLY_EXPIRED  if min_start < now - span retention (hourly span partitions of the trace's first hours
                           already dropped while its daily trace_summary partition is still held by the drop gate)
        complete = reasons.isEmpty()
-  9. masking: PiiMasker over span attributes, resource attributes, enrichment values, correlation values
+  9. masking: `SensitivityPolicy.displayValue` over span attributes, resource attributes, enrichment values, correlation values
 ```
 
 Steps 3–6 run in parallel on virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`), each on its own pooled connection. The whole request is bounded by the 5 s timeout.
@@ -1826,9 +1828,9 @@ tc:
 
 All `/api/v1/**` endpoints require `TC_VIEWER` or `TC_ADMIN`.
 
-**`PiiMasker`.**
-- Applies to attribute maps, enrichment values, correlation values, `matchedAttributes` and `business_operation.display_value`, when the key matches the policy (glob over the key) and the caller lacks `SCOPE_TC_PII`.
-- Strings are masked as `"****1234"`; numbers become `"****"`.
+**Masking (`SensitivityPolicy`, domain).**
+- Applies to attribute maps, enrichment values, correlation values, `matchedAttributes` and `business_operation.display_value`. The policy classifies each key (exact key or `*` pattern, from `tc.security.pii.keys`): SECRET values are always masked, PERSONAL values when the caller lacks `SCOPE_TC_PII`.
+- A masked value keeps its first two characters and gets `***` appended (`u-42` → `u-***`), the same `DigestTransform.MASK` used for the digest; numbers are masked as their text.
 - Search with `EQ` on a PII key is allowed, because the caller already knows the value. `PREFIX`, value autocomplete and brute force on PII keys are rejected with `403 /problems/pii-scope-required`.
 
 **Audit.** Every trace view and every search that touches a PII key is logged to `tc.audit` (user, traceId or predicate keys, never the values).
@@ -1842,7 +1844,7 @@ All `/api/v1/**` endpoints require `TC_VIEWER` or `TC_ADMIN`.
 
 ### 4.13 Tier-aware reads: the DIGEST tier (ADR-13, UC-22)
 
-Data older than n = `fullDays` days (default 7) exists only as `trace_digest` and `business_operation_digest` rows, kept until n + m days (default 97). The query API hides the split where it can and reports it where it cannot.
+Data older than n = `fullDataDays` days (default 7) exists only as `trace_digest` and `business_operation_digest` rows, kept until n + m days (default 97). The query API hides the split where it can and reports it where it cannot.
 
 **Tier boundary (`TierBoundary`).**
 - Nominal boundary: `now − n days`. `n` comes from the cached `retention_policy` snapshot (FULL rows), refreshed on `config_revision` change.
@@ -1871,7 +1873,7 @@ class TraceService {
         var full = assembler.assemble(id, start, end, caller);          // empty when no trace_summary row
         if (full.isPresent()) return full.get();                       // tier = FULL, spansExpired = false
         return digests.findTrace(id, start, end)                        // PK probes, see below
-                .map(d -> TraceDto.digestOnly(d, tiers.expiresOn(d.traceDay()), caller))  // PiiMasker applied
+                .map(d -> TraceDto.digestOnly(d, tiers.expiresOn(d.traceDay()), caller))  // SensitivityPolicy applied
                 .orElseThrow(() -> new TraceNotFound(id));              // 404 /problems/trace-not-found
     }
 }
@@ -1888,7 +1890,7 @@ WHERE trace_id = :id
 ORDER BY trace_day;          -- a long trace may have two rows (ADR-04); merged like trace_summary rows
 ```
 
-The DIGEST response is `{"traceId": "…", "tier": "DIGEST", "spansExpired": true, "digest": {…}}`: no spans, resources, enrichments, links or correlations. `complete`/`incompleteReasons` are not evaluated. `digest.attributes` goes through `PiiMasker` like any attribute map; SHA256 values are shown as stored (hex) and MASK values are already masked.
+The DIGEST response is `{"traceId": "…", "tier": "DIGEST", "spansExpired": true, "digest": {…}}`: no spans, resources, enrichments, links or correlations. `complete`/`incompleteReasons` are not evaluated. `digest.attributes` goes through `SensitivityPolicy` like any attribute map; SHA256 values are shown as stored (hex) and MASK values are already masked.
 
 **Search across tiers (`CrossTierSearchPlanner`).**
 
@@ -1909,7 +1911,7 @@ The DIGEST response is `{"traceId": "…", "tier": "DIGEST", "spansExpired": tru
 | `status` | `ERROR` → `d.outcome = 2`; `OK`/`UNSET` → `d.outcome = 1` | filter |
 | key not retained (`retain_in_digest = false`), or op `PREFIX`/`GT`/`GTE`/`LT`/`LTE`, or a `MASK` key | not translatable: **the whole DIGEST part is skipped** and `warnings += {code: "DIGEST_TIER_UNSUPPORTED_PREDICATE", key}` | — |
 
-4. **Hashing.** For a retained key with `digest_transform = SHA256`, `DigestValueHasher` replaces every query value by `HexFormat.of().formatHex(SHA-256(value.getBytes(UTF_8)))`, which is exactly what the compactor stored (`encode(sha256(convert_to(v, 'UTF8')), 'hex')`, §6.7). EQ on a PII key remains allowed (§4.11); the audit log records the key, never the value or its hash.
+4. **Hashing.** For a retained key with `digest_transform = SHA256`, `DigestTransform.SHA256.apply` replaces every query value by `HexFormat.of().formatHex(SHA-256(value.getBytes(UTF_8)))`, which is exactly what the compactor stored (`encode(sha256(convert_to(v, 'UTF8')), 'hex')`, §6.7). EQ on a PII key remains allowed (§4.11); the audit log records the key, never the value or its hash.
 5. **Execute** FULL first (newer rows), then DIGEST, in one request until `limit + 1` rows are collected:
 
 ```sql
@@ -1945,7 +1947,7 @@ public record SearchCursor(int v, Tier tier, Mode mode, long startMicros, UUID t
 **Business operations across tiers (`BusinessOperationService`).**
 - `GET /business-operations/{id}`: look in `business_operation` (follow `merged_into`, §4.8). If absent, probe `business_operation_digest` by PK `(operation_id, op_day)` over ≤ n + m daily partitions. The timeline is built from `steps` (`stepLabel`, `traceId`, `startTime`, `durationMs`, `outcome`); trace links open the digest view (`tier = DIGEST`). An id of an operation that was merged into another is not digested separately; in the DIGEST tier it returns `404`, and the UI navigates by survivor ids.
 - `GET /business-operations?type=&value=&outcome=&from=&to=`: split at B like the trace search.
-  - FULL part: §4.8 queries; `outcome` is computed on read by the shared `OperationOutcomeEvaluator` (tc-domain, same rules as §6.7) for at most `tc.query.operations.outcome-scan-budget` (default 2 000) candidates; if the budget is exhausted, `warnings += OUTCOME_FILTER_PARTIAL`.
+  - FULL part: §4.8 queries; `outcome` is computed on read by the shared `OutcomeRule.evaluate` (tc-domain, same rules as §6.7) for at most `tc.query.operations.outcome-scan-budget` (default 2 000) candidates; if the budget is exhausted, `warnings += OUTCOME_FILTER_PARTIAL`.
   - DIGEST part:
 
 ```sql
@@ -1987,7 +1989,7 @@ The admin REST API (`/api/v1/admin`, role `TC_ADMIN`) for:
 - Kafka connections and enrichment sources (UC-04, UC-05)
 - indexed attributes (UC-07)
 - business operation definitions (UC-08), including the business-operation `outcomeRule` (ADR-13)
-- retention policies (UC-16) and the retention tiers `fullDays` / `digestDays` (ADR-13, UC-23)
+- retention policies (UC-16) and the retention tiers `fullDataDays` / `digestDays` (ADR-13, UC-23)
 - retained attributes (`retainInDigest`, `digestTransform`) and compaction exclusions (UC-23)
 
 It also validates definitions, tests connections, runs dry-run tests and previews. Every mutation and the `config_revision` bump happen in **one transaction**. Mutations are audited.
@@ -2039,12 +2041,14 @@ flowchart TB
 | `GET/POST /indexed-attributes`, `PATCH /indexed-attributes/{keyId}` (status `DISABLED`/`ACTIVE`; `retainInDigest`, `digestTransform`; creates the indexed attribute when `retainInDigest = true` on a non-indexed key, §5.9) | UC-07, UC-23 |
 | `GET/POST /business-operation-definitions`, `GET/PUT /business-operation-definitions/{id}` (incl. `outcomeRule`, §5.9), `POST /business-operation-definitions/{id}/keys`, `DELETE /business-operation-definitions/{id}/keys/{keyId}` | UC-08, UC-23 |
 | `GET /retention-policies`, `PUT /retention-policies/{tableName}` (`precreate`, `partition_granularity` only) | UC-16 |
-| `GET/PUT /retention-policies/tiers` — body `{"fullDays":7,"digestDays":90}` (§5.9) | UC-23 |
+| `GET/PUT /retention-policies/tiers` — body `{"fullDataDays":7,"digestDays":90}` (§5.9) | UC-23 |
 | `GET/POST /compaction-exclusions`, `GET/PUT/DELETE /compaction-exclusions/{id}` (§5.9) | UC-23 |
 | `GET /compaction-state?from=&to=` — per-day compaction status and lag (§5.9) | UC-21 |
 | `GET /config-revision` | Current revision (UI shows "applied by services" using service metrics) |
 
 ### 5.4 Validation rules (`SourceDefinitionValidator`)
+
+> **Deviation (implementation, 2026-11-22).** The rules that need no I/O are checked by the domain records when the request is mapped to them (05 §4.7): `Names` and `EnrichmentLimits` (V1), `EnrichmentSource` (V2), `JsonPointer` (V3), `TraceContextSource` (V4), `EnrichmentSourceDefinition` and `FieldMapping` (V5–V7, V10), `Transform` (V9). Where this table differs, the domain wins: the name length, mapping count, target-key length, mask argument and regex length are configured limits; a regex needs at least one group (the first is used); only a `traceparent` header yields a span id, so SPAN scope needs `TRACEPARENT_HEADER`. V8, V11 and V12 stay in the validator.
 
 | # | Rule | Error code |
 |---|---|---|
@@ -2151,7 +2155,7 @@ List<ConsumerRecord<byte[], byte[]>> lastRecords(KafkaConnection conn, String to
 
 ```java
 @Transactional
-public SourceView updateDefinition(long id, int expectedRevision, SourceDefinition def, String user) {
+public SourceView updateDefinition(long id, int expectedRevision, EnrichmentSourceDefinition def, String user) {
     var src = sources.lockById(id);                    // SELECT ... FOR UPDATE
     if (src.currentRevision() != expectedRevision) throw new PreconditionFailed();   // 412 for a stale If-Match
     validator.validate(def).throwIfInvalid();
@@ -2173,7 +2177,7 @@ public SourceView updateDefinition(long id, int expectedRevision, SourceDefiniti
 - **Every** mutation of `kafka_connection`, `enrichment_source(_revision)`, `indexed_attribute`, `business_operation_definition`, `correlation_key`, `retention_policy` and `compaction_exclusion` calls `revisionBumper.bump()` in the same transaction. Consumers (ingester, enricher, query-api caches) therefore see either all of a change or none of it.
 - The `config_revision` single row serialises concurrent admin transactions, which is acceptable because admin traffic is tiny.
 - Indexed attribute creation: insert `attribute_key` if absent, then `INSERT INTO tc.indexed_attribute (key_id, origin_scope, numeric, status, indexed_since, created_by, created_at) VALUES (…, 'BACKFILLING', now(), …)`. With `backfill=false` the status is `ACTIVE` immediately. The ingester picks the change up within 10 s; `AttributeBackfill` covers older data (UC-07).
-- Business operation definition creation: keys must reference `attribute_key` rows (created if absent). At least one PRIMARY key is required, and `merge_window` must be between 1 min and `fullDays` − 1 day (6 d with the default n = 7, rule O5). The optional `outcomeRule` is validated by O1–O4 (§5.9).
+- Business operation definition creation: keys must reference `attribute_key` rows (created if absent). At least one PRIMARY key is required, and `merge_window` must be between 1 min and `fullDataDays` − 1 day (6 d with the default n = 7, rule O5). The optional `outcomeRule` is validated by O1–O4 (§5.9).
 - Retention policy: retention values are set per tier only (§5.9); all FULL-tier tables share n, so `trace_summary` retention always equals `span` retention, which the trace-by-id lookup depends on. `precreate` must be ≥ 1 day. Changing `partition_granularity` applies only to partitions created afterwards.
 
 **Audit.** `AuditLogger` writes JSON lines to logger `tc.audit` (shipped to the SIEM): `{ts, user, roles, action, entity, id, before_revision, after_revision, config_revision, client_ip}`. Definitions are versioned immutably, so the audit log plus the revision tables give full history.
@@ -2217,13 +2221,13 @@ All endpoints below require `TC_ADMIN`, run in one transaction with `revisionBum
 **Retention tiers — `PUT /retention-policies/tiers`.**
 
 ```json
-{"fullDays": 7, "digestDays": 90}
+{"fullDataDays": 7, "digestDays": 90}
 ```
 
 | # | Rule | Error code |
 |---|---|---|
-| R1 | `fullDays` is an integer ≥ 2 | `FULL_DAYS_TOO_SMALL` |
-| R2 | `fullDays` > the largest `business_operation_definition.merge_window`, in days rounded up (a business operation must be able to close inside the FULL tier) | `FULL_DAYS_BELOW_MERGE_WINDOW` |
+| R1 | `fullDataDays` is an integer ≥ 2 | `FULL_DATA_DAYS_TOO_SMALL` |
+| R2 | the largest `business_operation_definition.merge_window` ≤ `fullDataDays` − 1 day (traces are linked while their full data exists) | `FULL_DATA_DAYS_BELOW_MERGE_WINDOW` |
 | R3 | `digestDays` is an integer ≥ 0 (0 = digest disabled; the drop gate is then skipped) | `INVALID_DIGEST_DAYS` |
 
 ```java
@@ -2232,9 +2236,9 @@ public RetentionTiersView updateTiers(RetentionTiers req, String user) {
     validator.validate(req).throwIfInvalid();                              // R1-R3
     var before = tiers.current();
     jdbc.sql("UPDATE tc.retention_policy SET retention = make_interval(days => ?), updated_at = now() WHERE tier = 'FULL'")
-        .param(req.fullDays()).update();
+        .param(req.fullDataDays()).update();
     jdbc.sql("UPDATE tc.retention_policy SET retention = make_interval(days => ?), updated_at = now() WHERE tier = 'DIGEST'")
-        .param(req.fullDays() + req.digestDays()).update();              // DIGEST rows store the total age n + m
+        .param(req.fullDataDays() + req.digestDays()).update();              // DIGEST rows store the total age n + m
     long cfgRev = revisionBumper.bump();
     audit.log("RETENTION_TIERS_UPDATED", user, Map.of("before", before, "after", req, "configRevision", cfgRev));
     return view(req, cfgRev);
@@ -2242,8 +2246,8 @@ public RetentionTiersView updateTiers(RetentionTiers req, String user) {
 ```
 
 - DIGEST rows store the **total age** n + m, so `PartitionManager`'s per-row algorithm (§6.2) is unchanged.
-- The response includes consequences for the UI to confirm: lowering `fullDays` triggers a compaction burst for the newly eligible days (FULL data stays until compacted); lowering n + m drops digest partitions at the next `PartitionManager` run; raising either is not retroactive for already-dropped data.
-- `GET /retention-policies/tiers` returns `{fullDays, digestDays}` derived from the rows. `PUT /retention-policies/{tableName}` can still change `precreate` and `partition_granularity`; a `retention` that differs from the tier value is rejected with `409 /problems/retention-managed-by-tier`.
+- The response includes consequences for the UI to confirm: lowering `fullDataDays` triggers a compaction burst for the newly eligible days (FULL data stays until compacted); lowering n + m drops digest partitions at the next `PartitionManager` run; raising either is not retroactive for already-dropped data.
+- `GET /retention-policies/tiers` returns `{fullDataDays, digestDays}` derived from the rows. `PUT /retention-policies/{tableName}` can still change `precreate` and `partition_granularity`; a `retention` that differs from the tier value is rejected with `409 /problems/retention-managed-by-tier`.
 
 **Retained attributes — `PATCH /indexed-attributes/{keyId}`.**
 
@@ -2254,7 +2258,7 @@ public RetentionTiersView updateTiers(RetentionTiers req, String user) {
 - `keyId` is the `attribute_key` id (`indexed_attribute.key_id` references it). If no `indexed_attribute` row exists and `retainInDigest = true`, the control plane **creates it** with status `BACKFILLING` (`originScope` required, else `ORIGIN_SCOPE_REQUIRED`) in the same transaction; `AttributeBackfill` then indexes the retained FULL-tier data, so days not yet compacted still get the key. `POST /indexed-attributes` accepts the same two fields.
 - Validation:
   - `digestTransform` ∈ {NONE, SHA256, MASK} → `INVALID_DIGEST_TRANSFORM`.
-  - PII classes come from the PII policy (`tc.pii.keys`, classes PERSONAL / SECRET, see 05 §7.3). A **PERSONAL** key with `retainInDigest = true` and `NONE` requires `acknowledgePii = true` → `PII_RETAINED_IN_CLEAR`. A **SECRET** key with `NONE` is always refused → `SECRET_KEY_REQUIRES_TRANSFORM`.
+  - PII classes come from the PII policy (`tc.pii.keys`, classes PERSONAL / SECRET, see 05 §7.3). A **PERSONAL** key with `retainInDigest = true` and `NONE` requires `acknowledgePii = true` → `PERSONAL_DATA_RETAINED_IN_CLEAR`. A **SECRET** key with `NONE` is always refused → `SECRET_RETAINED_IN_CLEAR`.
   - Changing `digestTransform` of a key that is already retained requires `force = true` → `409 /problems/digest-transform-change`: digests compacted before the change keep the old form, so DIGEST-tier equality search finds only one form.
   - `status = DISABLED` while `retain_in_digest = true` → `409 /problems/retained-key-must-be-indexed` (unset the flag first, or in the same request).
 - The flag is not retroactive: days already DONE are not re-compacted.
@@ -2272,7 +2276,7 @@ public RetentionTiersView updateTiers(RetentionTiers req, String user) {
 | O2 | `outcomeKey`, if set, is an indexed key (status ACTIVE or BACKFILLING): the compactor reads it from `trace_attribute`. Saving the rule automatically sets that key to `retain_in_digest = true` with `digest_transform = NONE` if it is not retained yet (04 §6), so the outcome value also appears in the digest. Outcome values should be business codes, not identifiers | `OUTCOME_KEY_NOT_INDEXED` |
 | O3 | `successValues` / `failureValues`: ≤ 50 strings each, ≤ 512 chars, disjoint; they require `outcomeKey` | `INVALID_OUTCOME_VALUES` |
 | O4 | `finalStepLabel`, if set, equals the `step_label` of one of the type's `correlation_key` rows | `UNKNOWN_STEP_LABEL` |
-| O5 | `merge_window` (existing rule, now bounded by the tiers): between 1 min and `fullDays` − 1 day | `INVALID_MERGE_WINDOW` |
+| O5 | `merge_window` (existing rule, now bounded by the tiers): between 1 min and `fullDataDays` − 1 day | `INVALID_MERGE_WINDOW` |
 
 A rule change applies to operations compacted afterwards; existing `business_operation_digest` rows are not re-evaluated.
 
@@ -2448,12 +2452,13 @@ existing = SELECT cv.operation_definition_id, cv.value, cv.operation_id, cv.oper
 // 3. OperationLinker.link(LinkingInput(definition, rows, siblings, existing live operations)), per definition:
 //    the traces of the batch are linked one at a time, in the order of their earliest new observation, on a working
 //    copy, exactly as if each came in a run of its own. For each trace:
-//      a value keeps its operation if the trace carried it within the merge window; outside the window it is reused
-//      (first time on this trace: starts a new operation) or reused since (carried by this trace in an earlier run:
-//      left out, so a late fragment never takes a value from the operation that uses it now);
-//      no operation kept -> create; one -> extend; several -> merge into the survivor (named first, then earlier
+//      a value can join its operation if the trace carried it within the merge window; outside the window it was
+//      recycled (first time on this trace: treated like a new value) or taken over by a newer operation (carried by
+//      this trace in an earlier run: left out, so a late fragment never takes a value from the operation using it now);
+//      no operation -> create; one -> extend; several -> merge into the survivor (named first, then earlier
 //      first_seen, then smaller id as unsigned), unless the merged operation would exceed
-//      OperationMergePolicy.maxTracesPerOperation: then the trace changes nothing and a RefusedMerge is reported
+//      OperationMergePolicy.maxTracesPerOperation: then nothing is merged, each of the operations counts the trace,
+//      and a RefusedMerge is reported
 //      (metric tc_correlation_merge_refused_total);
 //      the trace's values are mapped to the resulting operation; trace_count + 1 unless the trace is already held
 // 4. write the LinkingResult: created, updated, merged (operations created and merged in the same run are never
@@ -2613,7 +2618,7 @@ tc:
 
 ### 6.7 `DigestCompactor` (ADR-13, UC-21)
 
-**Goal.** Condense FULL-tier data older than n = `fullDays` days into `trace_digest` (one row per trace) and `business_operation_digest` (one row per ended business operation) before `PartitionManager` drops it. Compaction never reads `span`; it reads `trace_summary`, `trace_attribute` (retained keys only), `trace_correlation`, `correlation_value` and `business_operation`.
+**Goal.** Condense FULL-tier data older than n = `fullDataDays` days into `trace_digest` (one row per trace) and `business_operation_digest` (one row per ended business operation) before `PartitionManager` drops it. Compaction never reads `span`; it reads `trace_summary`, `trace_attribute` (retained keys only), `trace_correlation`, `correlation_value` and `business_operation`.
 
 **Schedule and lock.** Cron `0 */5 * * * *` (every 5 min), ShedLock name **`digest-compactor`**, `lockAtMostFor = 30 min`, `lockAtLeastFor = 1 min`. Between chunks the job calls `LockExtender.extendActiveLock(Duration.ofMinutes(30), Duration.ZERO)`, so a day that takes longer than one lock period keeps its leader. If the leader dies, the other replica takes over after `lockAtMostFor` and resumes from `compaction_state.last_chunk_end`. It runs on the primary (direct connection, like the other jobs).
 
@@ -2646,7 +2651,7 @@ class DigestCompactor {
 
     private final CompactionStateRepository state;      // tc.compaction_state
     private final RetainedKeyRepository retainedKeys;   // indexed_attribute WHERE retain_in_digest
-    private final RetentionTiers tiers;                 // fullDays / digestDays from retention_policy
+    private final RetentionTiers tiers;                 // fullDataDays / digestDays from retention_policy
     private final DigestChunkWriter chunks;             // SQL below
     private final OperationDigestWriter operations;     // business_operation_digest
     private final TransactionTemplate tx;
@@ -2660,7 +2665,7 @@ class DigestCompactor {
         var t = tiers.current();
         if (t.digestDays() == 0) { metrics.lagDays(0); return; }           // digest disabled; drop gate skipped
         Instant now = clock.instant();
-        LocalDate newestEligible = LocalDate.ofInstant(now.minus(Duration.ofDays(t.fullDays())), UTC).minusDays(1);
+        LocalDate newestEligible = LocalDate.ofInstant(now.minus(Duration.ofDays(t.fullDataDays())), UTC).minusDays(1);
         state.ensurePending(newestEligible);
         var keys = retainedKeys.snapshot();                                 // key_id, key, digest_transform
         int days = 0;
@@ -2675,8 +2680,8 @@ class DigestCompactor {
             }
             LockExtender.extendActiveLock(LOCK_EXTENSION, Duration.ZERO);
         }
-        operations.compactEnded(now.minus(Duration.ofDays(t.fullDays())), props.operationBatchSize());
-        state.deleteOlderThan(LocalDate.ofInstant(now, UTC).minusDays(t.fullDays() + t.digestDays() + 7L));
+        operations.compactEnded(now.minus(Duration.ofDays(t.fullDataDays())), props.operationBatchSize());
+        state.deleteOlderThan(LocalDate.ofInstant(now, UTC).minusDays(t.fullDataDays() + t.digestDays() + 7L));
         metrics.lagDays(state.countNotDoneUpTo(newestEligible));            // tc_compaction_lag_days
     }
 
@@ -2770,7 +2775,7 @@ SELECT (SELECT count(*) FROM ins) AS digested, (SELECT count(*) FROM chunk) AS s
 
 1. Candidates: `business_operation` rows with `merged_into IS NULL`, `last_seen < now − n days`, no `business_operation_digest` row yet, and every member day DONE, i.e. all of `[first_seen::date − 1, last_seen::date + 1]` DONE in `compaction_state`.
 2. Members: `trace_digest` rows with `business_operation_id = op.id` (partial index), ordered by `start_time`. Step labels: `trace_correlation → correlation_key.step_label` of the member traces (earliest per trace). `trace_correlation` partitions are held long enough for this by the drop gate (§6.2).
-3. Outcome (`OperationOutcomeEvaluator`, shared with tc-query-api), per the type's `outcome_rule`:
+3. Outcome (`OutcomeRule.evaluate`, shared with tc-query-api), per the type's `outcome_rule`:
    1. `outcomeKey` set and a value found in any member (latest member by `start_time`): read from `trace_attribute`; if those partitions are gone and the key is retained with `NONE`, from the member's `trace_digest.attributes` → `SUCCESS` if in `successValues`, `FAILED` if in `failureValues`, else `UNKNOWN`; raw value → `outcome_detail`.
    2. else any member has `error_count > 0` → `FAILED`;
    3. else `finalStepLabel` set: a member reached that step → `SUCCESS`, otherwise `INCOMPLETE`;
@@ -2848,7 +2853,7 @@ tc-schema-changelog/src/main/resources/db/changelog/     # authoritative list an
                                           --   digest_transform, business_operation_definition.outcome_rule, trace_digest,
                                           --   business_operation_digest (parents + indexes incl. GIN), compaction_exclusion,
                                           --   compaction_state, tc.operation_root(uuid); re-seeds retention rows
-                                          --   from the ${fullDays}/${digestDays} changelog parameters
+                                          --   from the ${fullDataDays}/${digestDays} changelog parameters
 ```
 
 **Migration rules.**
@@ -2870,7 +2875,7 @@ spring:
     default-schema: tc
     liquibase-schema: tc             # databasechangelog / databasechangeloglock live in tc (schema pre-created by IaC)
     parameters:
-      fullDays: ${tc.retention.full-days}
+      fullDataDays: ${tc.retention.full-days}
       digestDays: ${tc.retention.digest-days}
   datasource:
     url: jdbc:postgresql://tc-pg-primary:5432/tracing
@@ -2919,8 +2924,8 @@ tc:
 | `/admin/connections`, `/admin/connections/:id` | Kafka connections list/editor + **Test connection** | `/admin/kafka-connections`, `…/{id}/test` | UC-04 |
 | `/admin/sources`, `/admin/sources/new`, `/admin/sources/:id` | **Enrichment source editor**: connection + topic, trace-context strategy, filter, field-mapping table (source, pointer/header, target key, type, transform, required), consumer options. **Test** panel (paste payload + headers → per-field results). **Preview** panel (last N records → per-record results). Revision history with diff. Activate/Pause. Live state from enricher metrics (via the control-plane) | `/admin/enrichment-sources/**` | UC-04, UC-05 |
 | `/admin/indexed-attributes` | List keys with status (BACKFILLING progress), add key (scope, numeric), disable; **"Retain in digest"** toggle + transform select (NONE/SHA256/MASK) per key, PII acknowledgement dialog for PII keys with NONE, "not retroactive" hint | `/admin/indexed-attributes` | UC-07, UC-23 |
-| `/admin/business-operation-definitions`, `/admin/business-operation-definitions/:id` | Business operation definition editor: keys with role PRIMARY/ALIAS and step labels, merge window (max `fullDays` − 1 day); **outcome rule editor** (outcome key from indexed keys, success/failure value chips, final step label select from the type's step labels; validation O1–O5) | `/admin/business-operation-definitions/**` | UC-08, UC-23 |
-| `/admin/retention` | **Retention tiers form** (`fullDays`, `digestDays`, computed total n + m, confirmation of consequences returned by the API) and the per-table policies (tier, granularity, precreate; retention read-only) | `/admin/retention-policies`, `/admin/retention-policies/tiers` | UC-16, UC-23 |
+| `/admin/business-operation-definitions`, `/admin/business-operation-definitions/:id` | Business operation definition editor: keys with role PRIMARY/ALIAS and step labels, merge window (max `fullDataDays` − 1 day); **outcome rule editor** (outcome key from indexed keys, success/failure value chips, final step label select from the type's step labels; validation O1–O5) | `/admin/business-operation-definitions/**` | UC-08, UC-23 |
+| `/admin/retention` | **Retention tiers form** (`fullDataDays`, `digestDays`, computed total n + m, confirmation of consequences returned by the API) and the per-table policies (tier, granularity, precreate; retention read-only) | `/admin/retention-policies`, `/admin/retention-policies/tiers` | UC-16, UC-23 |
 | `/admin/compaction-exclusions` | Compaction exclusions list/editor (service, root-name `LIKE` pattern, description) | `/admin/compaction-exclusions` | UC-23 |
 | `/admin/ops` | **Operations status**: compaction lag (days), per-day `compaction_state` table (status, progress by `last_chunk_end`, traces digested/excluded, operations digested, duration, error), FAILED days highlighted | `/admin/compaction-state` | UC-21 |
 
@@ -3036,7 +3041,7 @@ export const useTraceSearch = (req: TraceSearchRequest) =>
 
 | Module | Packages | Content |
 |---|---|---|
-| `tc-domain` | `…collector.domain` | Pure Java records and value objects: `TraceId`, `SpanIdHex`, `AttrValue`, `AttrType`, `SpanKind`, `StatusCode`, `OriginCode` (1 SPAN, 2 RESOURCE, 3 ENRICHMENT, 4 DERIVED), `EnrichmentSourceDefinition` (+ nested records: `TraceContextDef`, `FieldMapping`, `FilterDef`, `ConsumerOptions`), `CorrelationRole`, `SourceStatus`, `IndexedAttributeStatus`, and for ADR-13 `Tier`, `DigestTransform`, `TraceOutcome`, `OperationOutcome`, `OutcomeRule` + `OperationOutcomeEvaluator` (shared by `tc-maintenance` and `tc-query-api`). No Spring dependencies. |
+| `tc-domain` | `…collector.domain` | Pure Java value objects, aggregates, policies and state machines (package list in 05): ids and spans, attributes and their limits, `ResourceHasher`, `EnrichmentSourceDefinition` (`TraceContextSource`, `FieldMapping`, `Transform`, `extract`), `IndexedAttribute`, `SensitivityPolicy`, `DigestTransform`, `BusinessOperationDefinition`, `OutcomeRule` (`evaluate`, shared by `tc-maintenance` and `tc-query-api`), `OperationLinker`, `RetentionTiers`, `DigestProgress`. No Spring dependencies. |
 | `tc-persistence` | `…collector.persistence.{config,dictionary,partition,sql}` | JDBC repositories (`JdbcClient`) for config tables, `ConfigRevisionRepository`, `ConfigSnapshotLoader` (shared by ingester/enricher/query), `PartitionDdl` + `PartitionCatalog` (shared by maintenance/migrator), `SchemaVersionGuard`, SQL constants, PG array helpers, `SqlStateClassifier` |
 | `tc-kafka-support` | `…collector.kafka`, `…collector.enrich.extract` | `KafkaClientPropertiesBuilder` (connection + secrets → client props, allow-list), `SecretResolver` SPI + Vault/k8s implementations, `TopicGuard`, DLQ helpers (`DlqHeaders`, reason enums), and the **extraction engine** (`ExtractionPlanCompiler`, `TraceContextExtractor` strategies, `FieldExtractor`, `ValueTransform`, `PayloadDecoder` SPI) shared by `tc-enricher` and `tc-control-plane` (SD-4) |
 
@@ -3080,7 +3085,7 @@ ArchUnit tests enforce the module boundaries:
 
 | Level | Scope | Tools |
 |---|---|---|
-| Unit | Parser (golden `TraceMessage` JSON files incl. LONG > 2^53, unicode, `\u0000`, missing fields, unknown `schemaVersion`), `SpanNormalizer`, `ResourceDeduplicator` (hash stability across key order), `TraceDayResolver` (midnight crossing, cache miss), traceparent parsing (W3C test vectors: version `ff`, all-zero ids, uppercase, future versions), transforms, `SearchPlanner` (predicate classification, cursor HMAC), union-find merge rules (IdP orderings T1→T2→T3 and T3→T2→T1, merge window, size guard), `OperationOutcomeEvaluator` (rule order 1–4), `DigestValueHasher` (same hex as PostgreSQL `sha256`), cross-tier cursor (no duplicates or gaps across the boundary) | JUnit 5, AssertJ |
+| Unit | Parser (golden `TraceMessage` JSON files incl. LONG > 2^53, unicode, `\u0000`, missing fields, unknown `schemaVersion`), `SpanNormalizer`, `ResourceDeduplicator` (hash stability across key order), `TraceDayResolver` (midnight crossing, cache miss), traceparent parsing (W3C test vectors: version `ff`, all-zero ids, uppercase, future versions), transforms, `SearchPlanner` (predicate classification, cursor HMAC), `OperationLinker` (IdP orderings T1→T2→T3 and T3→T2→T1, merge window, size limit), `OutcomeRule.evaluate` (rule order 1–4), `DigestTransform.SHA256` (same hex as PostgreSQL `sha256`), cross-tier cursor (no duplicates or gaps across the boundary) | JUnit 5, AssertJ |
 | Slice | Controllers (`@WebMvcTest` + `spring-security-test` JWT), validation codes V1–V15, ProblemDetail payloads | Spring Boot test slices |
 | Integration (DB) | `SpanBatchWriter` writable CTE against **PostgreSQL 18** (counters after replay, duplicate fragments, partial duplicates, missing partition → TRANSIENT), PartitionManager DDL (create/attach/detach concurrently/finalize) and the drop gate (held while a day is not DONE), CorrelationResolver SQL, `DigestCompactor` chunk SQL (resume after a killed chunk, exclusions, transforms, operation outcome), backfill SQL, search SQL plans (`EXPLAIN` assertions: partition pruning, index-only scans) | Testcontainers `postgres:18` + `@ServiceConnection`, Liquibase changelogs from `tc-schema-migrator` |
 | Integration (Kafka) | Ingester end-to-end with poison records → `otlp-traces.dlq` headers; DB outage simulation (pause PG container) → no offset commit, no DLQ; enricher dynamic containers (activate/pause/hot-swap/restart, missing topic, wrong credentials), preview creates no consumer group (`Admin.listConsumerGroups` before/after) and no topics (`listTopics` before/after) | Testcontainers Kafka (`apache/kafka` image, KRaft) with `auto.create.topics.enable=false` |

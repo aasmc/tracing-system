@@ -29,12 +29,19 @@ public record EnrichmentLimits(
         Limits.requirePositive("maxRegexLength", maxRegexLength);
     }
 
-    /** @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_NAME} for a too long name */
+    /**
+     * Checks that the source's name is not longer than allowed.
+     *
+     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_NAME} for a too long name
+     */
     public void requireWithin(EnrichmentSource source) {
         Names.requireAtMost(source.name(), maxNameLength);
     }
 
     /**
+     * Checks that the definition stays within these limits: number of mappings, target-key length and transform
+     * arguments.
+     *
      * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_MAPPING} for too many mappings,
      *     {@code INVALID_TARGET_KEY} for a too long target key, {@code INVALID_TRANSFORM} for a transform argument above
      *     its limit

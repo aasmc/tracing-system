@@ -52,21 +52,21 @@ public record EnrichmentSourceDefinition(
     }
 
     /**
-     * Applies this definition to one event:
+     * Turns one event into the attributes it adds:
      *
      * <ol>
-     *   <li>find the trace (and span) with {@link #traceContextSource()}; none →
-     *       {@link Extraction.NoTraceContext};
-     *   <li>read every mapping in order ({@link FieldMapping} explains one read); the first failure →
-     *       {@link Extraction.Rejected} with its reason and the mapping's target key; an optional value that is missing
-     *       is skipped;
-     *   <li>otherwise → {@link Extraction.Enriched} with the values read, for the span (SPAN scope) or the whole trace
-     *       (TRACE scope).
+     *   <li>Find the trace (and span) the event refers to with {@link #traceContextSource()}. If there is none, the
+     *       result is {@link Extraction.NoTraceContext}.
+     *   <li>Read every mapping in order (see {@link FieldMapping}). The first mapping that fails makes the result
+     *       {@link Extraction.Rejected}, with the reason and the mapping's target key. An optional value that is missing
+     *       is skipped.
+     *   <li>Otherwise the result is {@link Extraction.Enriched} with the values read, for the span (SPAN scope) or for
+     *       the whole trace (TRACE scope).
      * </ol>
      *
-     * <p>For the SMS report of the class example the result is {@code Enriched(trace T2, span 5f3a9b2c1d0e4f68,
-     * {sms.delivery.status=DELIVERED, sms.provider=twilio})}. The event's timestamp, Kafka coordinates and storage are
-     * the caller's concern.
+     * <p>For the SMS delivery report of the class example the result is the span named by the report's
+     * {@code traceparent} header with {@code sms.delivery.status=DELIVERED} and {@code sms.provider=twilio}. Storing
+     * the attributes, with the event's timestamp and Kafka position, is the caller's job.
      *
      * @param maxValueBytes string values are cut to this many UTF-8 bytes (the configured attribute value limit)
      */

@@ -45,8 +45,8 @@ public record IndexedAttribute(
     /**
      * Moves to another status following {@link IndexStatus#transitionTo}.
      *
-     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException if the step is not allowed or breaks a rule
-     *     above
+     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException if the status change is not allowed or the
+     *     result would break one of the rules of this class
      */
     public IndexedAttribute moveTo(IndexStatus target) {
         IndexStatus newStatus = status.transitionTo(target).resultingStateOrThrow();
@@ -54,9 +54,13 @@ public record IndexedAttribute(
     }
 
     /**
-     * Starts retaining values with {@code transform}. Personal data may be kept in clear text only if the caller
-     * explicitly acknowledges it ({@code PERSONAL_DATA_RETAINED_IN_CLEAR}); secrets never ({@code SECRET_RETAINED_IN_CLEAR}).
+     * Starts copying this key's values into trace digests, written with {@code transform}. Digests are kept much longer
+     * than full trace data, so personal data may be kept there in clear text only if the admin explicitly acknowledges
+     * it ({@code PERSONAL_DATA_RETAINED_IN_CLEAR}), and secrets never ({@code SECRET_RETAINED_IN_CLEAR}).
      *
+     * @param transform how values are written into the digest
+     * @param sensitivity how sensitive the key's values are
+     * @param personalDataAcknowledged whether the admin accepted keeping personal data in clear text
      * @throws ru.aasmc.tracing.collector.domain.DomainViolationException if a rule is broken
      */
     public IndexedAttribute retainInDigest(

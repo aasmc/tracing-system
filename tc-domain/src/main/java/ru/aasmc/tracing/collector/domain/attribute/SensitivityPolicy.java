@@ -12,7 +12,7 @@ import java.util.stream.Collectors;
  *
  * <p>A rule's key is either an exact attribute key ({@code user_id}) or a pattern with {@code *} matching any
  * characters ({@code *.phone}). An exact rule wins over a pattern; of several matching patterns the most sensitive
- * class wins; keys without a rule are {@link Sensitivity#NONE}. Patterns are compiled once, when the policy is built.
+ * one wins; keys without a rule are {@link Sensitivity#NONE}. Patterns are compiled once, when the policy is built.
  */
 public final class SensitivityPolicy {
 
@@ -21,7 +21,7 @@ public final class SensitivityPolicy {
     private final Map<String, Sensitivity> exactRules;
     private final List<PatternRule> patternRules;
 
-    /** @param rules exact keys or patterns, and their class */
+    /** @param rules exact keys or patterns, each with the sensitivity of the matching keys */
     public SensitivityPolicy(Map<String, Sensitivity> rules) {
         exactRules = rules.entrySet().stream()
                 .filter(rule -> !rule.getKey().contains(WILDCARD))
@@ -32,6 +32,7 @@ public final class SensitivityPolicy {
                 .toList();
     }
 
+    /** How sensitive the values of {@code key} are, by the rules described above. */
     public Sensitivity sensitivityOf(AttributeKey key) {
         Sensitivity exact = exactRules.get(key.value());
         if (exact != null) {

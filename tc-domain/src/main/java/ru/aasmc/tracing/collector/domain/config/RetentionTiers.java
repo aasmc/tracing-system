@@ -28,8 +28,8 @@ public record RetentionTiers(int fullDataDays, int digestDays) {
     }
 
     /**
-     * Traces of one business operation are linked while their data is still there, so full data must outlive the
-     * longest merge window by at least a day.
+     * Checks that full data is kept long enough for linking: traces are linked into business operations only while
+     * their full data exists, so it must be kept at least one day longer than the longest merge window.
      *
      * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code FULL_DATA_DAYS_BELOW_MERGE_WINDOW} unless
      *     {@code mergeWindow <= fullDataDays - 1 day}

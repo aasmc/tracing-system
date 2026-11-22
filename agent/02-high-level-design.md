@@ -25,7 +25,7 @@ The Trace Collector System (TCS) is the backend for the spans that Spring Boot 4
 4. **Link** traces that belong to one business operation, for example IdP first factor → second factor → token exchange (UC-08, UC-09, UC-10, UC-14).
 5. **Query** traces by trace id, time range and attributes such as `user_id`, `client_id` and `auth.factor` (UC-11, UC-12, UC-13, UC-15, UC-20).
 6. **Present** results in a React UI (`tc-ui`) and manage configuration through an admin API (UC-04 … UC-08, UC-16, UC-19).
-7. **Retain** data in two tiers (ADR-13): full span detail for `fullDays` = n days (default 7), then a compact per-trace and per-business-operation **digest** (operation, outcome, retained custom attributes) for another `digestDays` = m days (default 90) (UC-21, UC-22, UC-23).
+7. **Retain** data in two tiers (ADR-13): full span detail for `fullDataDays` = n days (default 7), then a compact per-trace and per-business-operation **digest** (operation, outcome, retained custom attributes) for another `digestDays` = m days (default 90) (UC-21, UC-22, UC-23).
 
 **In scope:** the seven deployables listed in §6, the PostgreSQL schema `tc`, the Kafka topic contract, deployment, capacity and operations.
 
@@ -83,7 +83,7 @@ It replaces the rest with the decisions in §9.
 | FR-20 | Provide a React UI for search, trace view, business-operation timeline and administration. | UC-11 … UC-15, UC-04 … UC-08 |
 | FR-21 | Compact FULL-tier data older than n days into `trace_digest` and `business_operation_digest` (root service and name, duration, outcome, services, business operation, retained attributes; operation steps and outcome). Exclude configured noise (`compaction_exclusion`) unless the trace belongs to a business operation. | UC-21 |
 | FR-22 | Query the DIGEST tier: trace digest by id, search across tiers with warnings for unsupported predicates, historical business operations with outcome. | UC-22 |
-| FR-23 | Let admins configure retention tiers (`fullDays`, `digestDays`), retained attributes, outcome rules and compaction exclusions at runtime. | UC-23 |
+| FR-23 | Let admins configure retention tiers (`fullDataDays`, `digestDays`), retained attributes, outcome rules and compaction exclusions at runtime. | UC-23 |
 
 ### 2.2 Non-functional requirements
 
@@ -95,7 +95,7 @@ It replaces the rest with the decisions in §9.
 | NFR-04 | Idempotency | Replay of any offset range produces identical `span` rows and identical `trace_summary` counters ("effectively once"). |
 | NFR-05 | Query latency | Trace by id (≤ 10 000 spans): p95 < 1 s. Trace digest by id: p95 < 1 s. Indexed search, 24 h window, selective predicate: p95 < 2 s. DIGEST-tier search, 31 d window, selective predicate: p95 < 3 s. Brute-force search: hard limit 30 s. |
 | NFR-06 | Availability | Read API 99.9 %. Ingestion survives a PostgreSQL outage for up to the Kafka retention (3 days) minus the catch-up time. |
-| NFR-07 | Retention | Two tiers (ADR-13), configurable at runtime in `retention_policy` (`tier` FULL / DIGEST). **FULL** (span, trace_attribute, span_link, trace_summary, trace_enrichment, trace_correlation, correlation_value, business_operation): n = `fullDays`, default **7 d** (min 2). **DIGEST** (trace_digest, business_operation_digest): a further m = `digestDays`, default **90 d** (0 = disabled), i.e. dropped at n + m = 97 d total age. Compaction lag ≤ 1 day; uncompacted FULL data is never dropped. |
+| NFR-07 | Retention | Two tiers (ADR-13), configurable at runtime in `retention_policy` (`tier` FULL / DIGEST). **FULL** (span, trace_attribute, span_link, trace_summary, trace_enrichment, trace_correlation, correlation_value, business_operation): n = `fullDataDays`, default **7 d** (min 2). **DIGEST** (trace_digest, business_operation_digest): a further m = `digestDays`, default **90 d** (0 = disabled), i.e. dropped at n + m = 97 d total age. Compaction lag ≤ 1 day; uncompacted FULL data is never dropped. |
 | NFR-08 | Scalability | Ingest scales horizontally up to the partition count of `otlp-traces` (24). Profile L (5 000 traces/s) exceeds a single PostgreSQL primary, so use an alternative (§13). |
 | NFR-09 | Isolation | A failing or slow enrichment source must not delay span ingestion or other enrichment sources. |
 | NFR-10 | Operability | No Kafka topic is created by TCS. Configuration changes apply without redeploy (ingester ≤ 10 s, enricher ≤ 30 s). Every component exports Prometheus metrics. |
@@ -375,14 +375,14 @@ flowchart LR
 
 **Correlation path.**
 - Ingester and enricher append `trace_correlation` rows synchronously, inside their main transactions.
-- `tc-maintenance`'s single-leader `CorrelationResolver` reads new rows every 10 s past a watermark (`correlation_resolver_state`). It runs union-find over "values that share a trace", then creates or merges `business_operation` rows and maintains `correlation_value` (value → operation).
+- `tc-maintenance`'s single-leader `CorrelationResolver` reads new rows every 10 s past a watermark (`correlation_resolver_state`). It links the new traces one at a time (`OperationLinker`): a trace whose values belong to no operation creates one, to one operation extends it, to several merges them; then it writes the `business_operation` rows and maintains `correlation_value` (value → operation).
 - In the IdP example:
   - T1 and T2 share `idp.auth_session_id=as-777`.
   - T2 and T3 share `oauth.authorization_code=code-abc`.
   - All three end up in one operation (UC-09, UC-10).
 
 **Compaction path (ADR-13).**
-- Data lives in the **FULL tier** for n = `fullDays` days (default 7). `DigestCompactor` then condenses each trace into one `trace_digest` row (root service and name, duration, span and error counts, outcome, services, business operation, and the values of the attribute keys flagged `retain_in_digest`, transformed by `digest_transform`) and each ended business operation into one `business_operation_digest` row (steps, outcome by the business operation definition's `outcome_rule`, union of retained attributes).
+- Data lives in the **FULL tier** for n = `fullDataDays` days (default 7). `DigestCompactor` then condenses each trace into one `trace_digest` row (root service and name, duration, span and error counts, outcome, services, business operation, and the values of the attribute keys flagged `retain_in_digest`, transformed by `digest_transform`) and each ended business operation into one `business_operation_digest` row (steps, outcome by the business operation definition's `outcome_rule`, union of retained attributes).
 - Inputs are `trace_summary`, `trace_attribute` (retained keys only), `trace_correlation` and `correlation_value`, never `span`. Traces matching a `compaction_exclusion` (for example `GET /actuator/%`) are skipped unless they belong to a business operation.
 - The **DIGEST tier** is kept for a further m = `digestDays` days (default 90), so business history covers n + m = 97 days at about 0.5 KB per trace instead of ~13.8 KB.
 - `PartitionManager` drops FULL-tier partitions only after the days they cover are compacted (drop gate).
@@ -748,9 +748,9 @@ Each ADR records which property is **borrowed** and from where. "Tempo" refers t
   - Span detail is ~13 KB of the ~13.8 KB stored per trace (04 §9). Keeping everything for 14–90 days (the previous per-table mix) costs ≈ 23.5 TB per node at M and still keeps spans for only 14 days.
   - A digest of one trace (root service and name, duration, outcome, services, business operation, a dozen business attribute values) is about 0.5 KB.
 - **Decision.**
-  - **FULL tier:** everything as designed so far (`span`, `trace_attribute`, `span_link`, `trace_summary`, `trace_enrichment`, `trace_correlation`, `correlation_value`, `business_operation`) is kept `fullDays` = n days (default **7**, min 2). `business_operation` stays monthly; a month partition is dropped when the whole month is older than n days and all its operations are compacted.
+  - **FULL tier:** everything as designed so far (`span`, `trace_attribute`, `span_link`, `trace_summary`, `trace_enrichment`, `trace_correlation`, `correlation_value`, `business_operation`) is kept `fullDataDays` = n days (default **7**, min 2). `business_operation` stays monthly; a month partition is dropped when the whole month is older than n days and all its operations are compacted.
   - **DIGEST tier:** `trace_digest` (one row per trace) and `business_operation_digest` (one row per business operation), daily partitions, kept `digestDays` = m days (default **90**) **after** the FULL tier ends, i.e. dropped at n + m days of age (97 by default). m = 0 disables the digest.
-  - Configuration lives in `retention_policy` (new column `tier` FULL / DIGEST) and is changed with `PUT /api/v1/admin/retention-policies/tiers` `{"fullDays":7,"digestDays":90}` in one transaction with a `config_revision` bump. Validation: `fullDays ≥ 2` and `fullDays >` the largest correlation `merge_window` (in days, rounded up); `digestDays ≥ 0`. `tc.retention.full-days=7` and `tc.retention.digest-days=90` only seed the migration.
+  - Configuration lives in `retention_policy` (new column `tier` FULL / DIGEST) and is changed with `PUT /api/v1/admin/retention-policies/tiers` `{"fullDataDays":7,"digestDays":90}` in one transaction with a `config_revision` bump. Validation: `fullDataDays ≥ 2` and `fullDataDays >` the largest correlation `merge_window` (in days, rounded up); `digestDays ≥ 0`. `tc.retention.full-days=7` and `tc.retention.digest-days=90` only seed the migration.
   - **Retained attributes:** `indexed_attribute.retain_in_digest` and `digest_transform` (NONE, SHA256, MASK). A retained key must be indexed, because compaction reads `trace_attribute` and never `span`; flagging a non-indexed key creates the `indexed_attribute` (BACKFILLING). Enrichment-derived values are covered, because indexed enrichment keys already reach `trace_attribute`.
   - **Outcome:** `trace_digest.outcome` 1 = OK, 2 = ERROR (from `error_count`). Business operations get `OperationOutcome` (UNKNOWN, SUCCESS, FAILED, INCOMPLETE) from the business operation definition's `outcome_rule` (`outcomeKey`, `successValues`, `failureValues`, `finalStepLabel`).
   - **Compaction:** `tc-maintenance` `DigestCompactor` (ShedLock `digest-compactor`, every 5 min) processes each whole day older than n days in 1-hour chunks with one set-based `INSERT … SELECT … ON CONFLICT DO NOTHING` per chunk, resumable through `compaction_state`. `compaction_exclusion` filters noise such as health checks.
