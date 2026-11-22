@@ -1,5 +1,15 @@
 package ru.aasmc.tracing.collector.persistence.dictionary;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -10,17 +20,6 @@ import ru.aasmc.tracing.collector.domain.attribute.AttributeType;
 import ru.aasmc.tracing.collector.persistence.PersistenceIT;
 import ru.aasmc.tracing.testinfra.JdbcProbe;
 import ru.aasmc.tracing.testinfra.TestIds;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.stream.IntStream;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 @PersistenceIT
 class DictionaryRepositoryIT {

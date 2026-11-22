@@ -2011,7 +2011,7 @@ flowchart TB
         CT["admin.kafka<br/>ConnectionTester - AdminClient"]
         PV["admin.kafka<br/>RecordPreviewer - assign + seek"]
         DRY["admin.kafka<br/>DryRunService"]
-        CFG["admin.config<br/>ConfigWriter, ConfigRevisionBumper"]
+        CFG["admin.config<br/>ConfigWriter, ConfigRevisionRepository"]
         AUD["admin.audit<br/>AuditLogger"]
         SR["kafka - shared<br/>SecretResolver"]
     end
@@ -2167,7 +2167,7 @@ public SourceView updateDefinition(long id, int expectedRevision, EnrichmentSour
         VALUES (?, ?, ?::jsonb, ?, now())""").params(id, rev, json(def), user).update();
     jdbc.sql("UPDATE tc.enrichment_source SET current_revision = ?, updated_at = now() WHERE id = ?")
         .params(rev, id).update();
-    long cfgRev = revisionBumper.bump();               // UPDATE tc.config_revision SET revision = revision + 1,
+    long cfgRev = configRevisions.increment();        // UPDATE tc.config_revision SET revision = revision + 1,
                                                        //   updated_at = now() WHERE id = 1 RETURNING revision
     audit.log("SOURCE_REVISED", user, Map.of("sourceId", id, "revision", rev, "configRevision", cfgRev));
     return view(id);
@@ -2175,7 +2175,8 @@ public SourceView updateDefinition(long id, int expectedRevision, EnrichmentSour
 ```
 
 **Rules.**
-- **Every** mutation of `kafka_connection`, `enrichment_source(_revision)`, `indexed_attribute`, `business_operation_definition`, `correlation_key`, `retention_policy` and `compaction_exclusion` calls `revisionBumper.bump()` in the same transaction. Consumers (ingester, enricher, query-api caches) therefore see either all of a change or none of it.
+- **Every** mutation of `kafka_connection`, `enrichment_source(_revision)`, `indexed_attribute`, `business_operation_definition`, `correlation_key`, `retention_policy` and `compaction_exclusion` calls `configRevisions.increment()` in the same transaction. Consumers (ingester, enricher, query-api caches) therefore see either all of a change or none of it. `increment()` and the repositories' mutating methods require an active transaction (`Propagation.MANDATORY`), so a change cannot be committed on its own by mistake.
+- `ConfigSnapshotLoader.load()` reads every part of the configuration in one read-only transaction whose first statement is `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`: all parts belong to the revision it reads. The isolation is set by SQL, not by `Connection.setTransactionIsolation`, because PgJDBC applies the latter to the whole session, which PgBouncer in transaction mode shares between clients.
 - The `config_revision` single row serialises concurrent admin transactions, which is acceptable because admin traffic is tiny.
 - Indexed attribute creation: insert `attribute_key` if absent, then `INSERT INTO tc.indexed_attribute (key_id, origin_scope, numeric, status, indexed_since, created_by, created_at) VALUES (…, 'BACKFILLING', now(), …)`. With `backfill=false` the status is `ACTIVE` immediately. The ingester picks the change up within 10 s; `AttributeBackfill` covers older data (UC-07).
 - Business operation definition creation: keys must reference `attribute_key` rows (created if absent). At least one PRIMARY key is required, and `merge_window` must be between 1 min and `fullDataDays` − 1 day (6 d with the default n = 7, rule O5). The optional `outcomeRule` is validated by O1–O4 (§5.9).
@@ -2217,7 +2218,7 @@ tc:
 
 ### 5.9 Two-tier retention administration (ADR-13, UC-23)
 
-All endpoints below require `TC_ADMIN`, run in one transaction with `revisionBumper.bump()`, and are audited (`RETENTION_TIERS_UPDATED`, `DIGEST_RETENTION_CHANGED`, `OUTCOME_RULE_CHANGED`, `COMPACTION_EXCLUSION_*`).
+All endpoints below require `TC_ADMIN`, run in one transaction with `configRevisions.increment()`, and are audited (`RETENTION_TIERS_UPDATED`, `DIGEST_RETENTION_CHANGED`, `OUTCOME_RULE_CHANGED`, `COMPACTION_EXCLUSION_*`).
 
 **Retention tiers — `PUT /retention-policies/tiers`.**
 
@@ -2240,7 +2241,7 @@ public RetentionTiersView updateTiers(RetentionTiers req, String user) {
         .param(req.fullDataDays()).update();
     jdbc.sql("UPDATE tc.retention_policy SET retention = make_interval(days => ?), updated_at = now() WHERE tier = 'DIGEST'")
         .param(req.fullDataDays() + req.digestDays()).update();              // DIGEST rows store the total age n + m
-    long cfgRev = revisionBumper.bump();
+    long cfgRev = configRevisions.increment();
     audit.log("RETENTION_TIERS_UPDATED", user, Map.of("before", before, "after", req, "configRevision", cfgRev));
     return view(req, cfgRev);
 }
