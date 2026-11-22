@@ -14,7 +14,7 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.common.errors.TopicExistsException;
 
 /**
- * Creates topics with {@link Admin}, exactly as platform admins do (09 §0.3 T3). TCS itself never creates topics.
+ * Creates topics with {@link Admin}, exactly as platform admins do. TCS itself never creates topics.
  */
 public final class KafkaTopicsFixture {
 

@@ -7,34 +7,35 @@ import java.util.function.Function;
 import java.util.function.ToIntFunction;
 
 /**
- * Trace-level header, one row per {@code (trace_id, trace_day)} of {@code trace_summary} (05 §4.4).
+ * Header row of a trace: time bounds, root, counters and services, kept up to date as fragments of the trace arrive.
  *
- * <p>A commutative monoid over the set of <em>inserted</em> spans: {@code ofInsertedSpans(S1).merge(
- * ofInsertedSpans(S2))} equals the summary of {@code S1 ∪ S2} for disjoint sets (counters, bounds, root, services),
- * and {@link #merge} is commutative and associative. A replayed fragment inserts no spans and contributes nothing.
+ * <p>A trace reaches the collector in several fragments, in any order, possibly more than once. Each fragment adds a
+ * summary of the spans it actually inserted (a replayed fragment inserts none), and summaries are combined with
+ * {@link #merge}. Because {@code merge} is commutative and associative, the final summary does not depend on the
+ * order of the fragments.
  *
- * <p>Invariants ({@code INVALID_TRACE_SUMMARY}): {@code spanCount >= 1}; {@code 0 <= errorCount <= spanCount};
- * {@code end >= start}; {@code fragmentCount >= 1}; {@code lastIngestedAt >= firstIngestedAt}; {@code serviceIds} is
- * an immutable sorted copy.
+ * <p>Rules ({@code INVALID_TRACE_SUMMARY}): {@code spanCount >= 1}; {@code 0 <= errorCount <= spanCount};
+ * {@code endEpochNanos >= startEpochNanos}; {@code fragmentCount >= 1}; {@code lastIngestedAt >= firstIngestedAt};
+ * {@code serviceIds} is an immutable sorted copy.
  *
  * @param traceId the trace
- * @param traceDay partition key
- * @param startEpochNanos min span start
- * @param endEpochNanos max span end
- * @param root root span, {@code null} while rootless
- * @param spanCount inserted spans
- * @param errorCount inserted spans with status ERROR
- * @param serviceIds distinct service dictionary ids
+ * @param traceDay the day of the earliest span
+ * @param startEpochNanos earliest span start
+ * @param endEpochNanos latest span end
+ * @param root the root span, {@code null} while it has not arrived
+ * @param spanCount spans inserted
+ * @param errorCount spans with status ERROR
+ * @param serviceIds dictionary ids of the services involved
  * @param fragmentCount fragments that inserted at least one span
- * @param firstIngestedAt first insert time
- * @param lastIngestedAt last insert time
+ * @param firstIngestedAt when the first span was inserted
+ * @param lastIngestedAt when the last span was inserted
  */
 public record TraceSummary(
         TraceId traceId,
         TraceDay traceDay,
         long startEpochNanos,
         long endEpochNanos,
-        RootInfo root,
+        RootSpan root,
         int spanCount,
         int errorCount,
         SortedSet<Integer> serviceIds,
@@ -43,13 +44,13 @@ public record TraceSummary(
         Instant lastIngestedAt) {
 
     /**
-     * Summary of the spans actually inserted from one fragment ({@code fragmentCount = 1}).
+     * Summary of the spans one fragment inserted ({@code fragmentCount = 1}).
      *
-     * @param day the resolved trace day
-     * @param inserted non-empty spans of one trace
+     * @param day the trace day
+     * @param inserted spans of one trace, not empty
      * @param serviceIdOf dictionary id of a span's service
-     * @param nameIdOf dictionary id of a span's name, {@code null} on overflow
-     * @param now ingest time
+     * @param nameIdOf dictionary id of a span's name, {@code null} if it has none
+     * @param now insert time
      * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_TRACE_SUMMARY} if
      *     {@code inserted} is empty or mixes traces
      */
@@ -63,22 +64,14 @@ public record TraceSummary(
     }
 
     /**
-     * Commutative, associative merge that mirrors the SQL {@code ON CONFLICT DO UPDATE} of {@code trace_summary}:
-     * min/max of bounds and ingest times, sums of counters, union of services, the earlier trace day (read-side merge
-     * of split rows), and the root with the earliest start, then the smallest unsigned span id.
+     * Combines two summaries of the same trace: earliest day, start and first insert; latest end and last insert;
+     * sums of the counters; union of the services; and as root the one that started first (ties: the smaller
+     * unsigned span id).
      *
-     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_TRACE_SUMMARY} for summaries
-     *     of different traces
+     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_TRACE_SUMMARY} for
+     *     summaries of different traces
      */
     public TraceSummary merge(TraceSummary other) {
-        throw new UnsupportedOperationException();
-    }
-
-    public long durationNanos() {
-        throw new UnsupportedOperationException();
-    }
-
-    public boolean rootless() {
         throw new UnsupportedOperationException();
     }
 }

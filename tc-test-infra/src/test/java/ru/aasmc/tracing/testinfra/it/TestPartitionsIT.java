@@ -14,7 +14,7 @@ import ru.aasmc.tracing.testinfra.JdbcProbe;
 import ru.aasmc.tracing.testinfra.TestIds;
 import ru.aasmc.tracing.testinfra.TestPartitions;
 
-/** The Phase-0 fallback of {@link TestPartitions} against throw-away partitioned tables (04 §8.1 naming). */
+/** {@link TestPartitions} against throw-away partitioned tables. */
 @InfraIT
 class TestPartitionsIT {
 

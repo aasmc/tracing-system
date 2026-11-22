@@ -1,9 +1,9 @@
 package ru.aasmc.tracing.collector.domain.correlation;
 
-/** Role of a correlation key (05 §4.10). */
+/** Role of a correlation key in a business operation. */
 public enum KeyRole {
-    /** The natural business id; the first PRIMARY value becomes the operation's display value. */
+    /** Names the operation, e.g. a login session id; its first value becomes the operation's display value. */
     PRIMARY,
-    /** A secondary id that bridges traces (e.g. an authorization code). */
+    /** Only links traces, e.g. an authorization code handed from one step to the next. */
     ALIAS
 }

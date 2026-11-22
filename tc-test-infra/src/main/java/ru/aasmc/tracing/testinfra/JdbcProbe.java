@@ -10,10 +10,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * Read-mostly helper queries for assertions (09 §1.3), executed on a superuser connection that is independent of
+ * Read-mostly helper queries for assertions, executed on a superuser connection that is independent of
  * the application's {@code DataSource}. Sessions run with {@code TimeZone = UTC}, so rendered timestamps
- * ({@code pg_get_expr} of partition bounds, {@code ::date} casts) do not depend on the JVM's default zone. Domain-specific helpers ({@code countSpans(traceId)},
- * {@code summary(traceId)}) are added in Phase 2, once the tables exist.
+ * ({@code pg_get_expr} of partition bounds, {@code ::date} casts) do not depend on the JVM's default zone.
  */
 public final class JdbcProbe {
 
@@ -71,7 +70,7 @@ public final class JdbcProbe {
             config.setPassword(postgres.getPassword());
             config.setMaximumPoolSize(4);
             config.setPoolName("tc-test-probe");
-            // PgJDBC sets the session TimeZone to the JVM default zone; TCS reasons in UTC (04 §8.1)
+            // PgJDBC sets the session TimeZone to the JVM default zone; TCS works in UTC
             config.setConnectionInitSql("SET TIME ZONE 'UTC'");
             HikariDataSource dataSource = new HikariDataSource(config);
             Runtime.getRuntime().addShutdownHook(new Thread(dataSource::close, "tc-test-probe-close"));

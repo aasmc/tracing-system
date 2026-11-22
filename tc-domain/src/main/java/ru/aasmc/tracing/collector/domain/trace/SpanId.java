@@ -3,34 +3,28 @@ package ru.aasmc.tracing.collector.domain.trace;
 import java.util.Optional;
 
 /**
- * 64-bit W3C span id (05 §3.2), stored as PostgreSQL {@code bigint}.
+ * A 64-bit W3C span id. Its text form is 16 lowercase hex characters; in PostgreSQL it is a signed {@code bigint},
+ * so ids from {@code 8000000000000000} up are stored as negative numbers. The mapping is lossless.
  *
- * <p>Invariants: not all zeros ({@code INVALID_SPAN_ID}). The 64 bits are reinterpreted as a two's-complement
- * {@code long}, so ids {@code >= 8000000000000000} become negative; the mapping is lossless. The all-zero parent id of
- * the wire means "no parent" and is handled by {@link #parseParent(String)}, not by the constructor.
+ * <p>Never zero.
  *
  * @param value the 64 bits as a signed long
  */
 public record SpanId(long value) {
 
-    /** The wire's parent id of a root span. */
-    public static final String ROOT_PARENT_HEX = "0000000000000000";
-
-    /** Number of hex characters of the text form. */
-    public static final int HEX_LENGTH = 16;
-
     /**
-     * Parses 16 hex characters (upper case accepted).
+     * Parses 16 hex characters; upper case is accepted.
      *
-     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_SPAN_ID}
+     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_SPAN_ID} for null, a wrong
+     *     length, a non-hex character or all zeros
      */
     public static SpanId parse(String hex) {
         throw new UnsupportedOperationException();
     }
 
     /**
-     * Parses a parent id: {@link #ROOT_PARENT_HEX}, {@code null} and {@code ""} give {@link Optional#empty()} (root
-     * span); anything else is parsed like {@link #parse(String)}.
+     * Parses a parent span id. Producers send {@code 0000000000000000} (or nothing) for a root span, so that value,
+     * {@code null} and {@code ""} give an empty result; anything else is parsed like {@link #parse}.
      */
     public static Optional<SpanId> parseParent(String hex) {
         throw new UnsupportedOperationException();

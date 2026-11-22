@@ -21,6 +21,9 @@
             <artifactId>re2j</artifactId>
         </dependency>
 
+        <!-- the aggregate includes junit-jupiter-params: property-style checks (commutativity, orderings) are
+             @ParameterizedTest over seeded permutations (testmodel.domain.Permutations), no jqwik (09 1b-1).
+             The test model (package ru.aasmc.tracing.collector.testmodel.domain) ships in the test-jar. -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

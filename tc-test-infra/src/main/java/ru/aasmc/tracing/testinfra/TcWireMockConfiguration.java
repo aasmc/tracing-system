@@ -5,8 +5,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.test.context.DynamicPropertyRegistrar;
 
 /**
- * Points the application at the WireMock-backed OIDC issuer and Vault (09 §1.3 "WireMockConfiguration"; renamed to
- * avoid a clash with WireMock's own {@code WireMockConfiguration}). Exposes {@link TestJwtIssuer} and
+ * Points the application at the WireMock-backed OIDC issuer and Vault (not named
+ * {@code WireMockConfiguration} to avoid a clash with WireMock's own class). Exposes {@link TestJwtIssuer} and
  * {@link VaultStubs} as beans so tests can inject them.
  */
 @TestConfiguration(proxyBeanMethods = false)

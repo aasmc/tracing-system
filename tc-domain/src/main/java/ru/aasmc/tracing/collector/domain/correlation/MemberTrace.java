@@ -1,21 +1,17 @@
 package ru.aasmc.tracing.collector.domain.correlation;
 
 import java.time.Instant;
-import java.util.Optional;
 import java.util.Set;
 import ru.aasmc.tracing.collector.domain.trace.TraceId;
 
 /**
- * What compaction knows about one member trace of a business operation (05 §4.10.1): from {@code trace_digest},
- * {@code trace_attribute} and {@code trace_correlation}.
- *
- * <p>Invariants: trace id and start not null; {@code errorCount >= 0}; {@code stepLabels} is an immutable copy.
+ * What outcome evaluation needs to know about one trace of a business operation.
  *
  * @param traceId the trace
  * @param startTime trace start
- * @param errorCount spans with status ERROR
- * @param outcomeValue raw value of the rule's outcome key on this trace, if any
- * @param stepLabels labels of all correlation keys that linked this trace
+ * @param errorCount spans with status ERROR, {@code >= 0}
+ * @param outcomeValue the trace's value of the rule's outcome attribute, or {@code null}
+ * @param stepLabels step labels of the keys that linked this trace
  */
 public record MemberTrace(
-        TraceId traceId, Instant startTime, int errorCount, Optional<String> outcomeValue, Set<String> stepLabels) {}
+        TraceId traceId, Instant startTime, int errorCount, String outcomeValue, Set<String> stepLabels) {}

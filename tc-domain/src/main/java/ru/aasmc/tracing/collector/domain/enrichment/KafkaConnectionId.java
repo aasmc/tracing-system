@@ -1,7 +1,7 @@
 package ru.aasmc.tracing.collector.domain.enrichment;
 
 /**
- * Id of a {@link KafkaConnection} ({@code kafka_connection.id}, 05 §4.6).
+ * Id of a configured connection to a client's Kafka cluster.
  *
  * @param value the id
  */

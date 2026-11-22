@@ -5,7 +5,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * JVM-wide container singletons (09 §0.3 T7). Each container is started on first access and lives until the JVM
+ * JVM-wide container singletons, so all test contexts of a JVM share one PostgreSQL and two Kafka clusters. Each container is started on first access and lives until the JVM
  * exits (Ryuk removes it). PostgreSQL is returned only after the infrastructure-as-code bootstrap and the real
  * Liquibase changelogs have been applied ({@link LiquibaseMigrations}).
  *
@@ -68,7 +68,7 @@ public final class TcContainers {
         KafkaContainer container = new KafkaContainer(image("tc.image.kafka", DEFAULT_KAFKA_IMAGE))
                 // the image's default CLUSTER_ID is a constant: without this both clusters report the same id
                 .withEnv("CLUSTER_ID", clusterId)
-                // topics are created by platform admins only (no Kafka Streams, no auto-creation: 09 §0.3 T3)
+                // topics are created by platform admins only (TCS never creates topics, so auto-creation is off)
                 .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false")
                 .withReuse(true);
         container.start();

@@ -11,7 +11,7 @@ import org.springframework.core.annotation.AliasFor;
 import org.springframework.test.context.ActiveProfiles;
 
 /**
- * The only way to write a TCS integration test (09 §0.3 T1, T6): the full Spring Boot context of the module, the
+ * The only way to write a TCS integration test: the full Spring Boot context of the module, the
  * JVM-wide containers, WireMock and the mutable clock, profile {@code it}.
  *
  * <p>Each module defines its own variant that adds module-specific imports, e.g.

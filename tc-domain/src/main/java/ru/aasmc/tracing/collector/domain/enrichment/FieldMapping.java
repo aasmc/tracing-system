@@ -4,31 +4,33 @@ import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeType;
 
 /**
- * Takes one field of an enrichment event, applies a {@link Transform}, and produces one attribute (05 §4.7.1).
+ * Reads one value from an enrichment event, transforms it and stores it as one attribute.
  *
- * <p>Invariants: PAYLOAD needs {@code jsonPointer}, HEADER needs a non-blank {@code headerName}
- * ({@code INVALID_MAPPING}); {@code targetKey} matches {@link #TARGET_KEY_PATTERN} ({@code INVALID_TARGET_KEY}) and
- * is not {@link AttributeKey#reservedForEnrichment() reserved} ({@code RESERVED_KEY}); a string-only transform needs
- * {@code valueType} STRING, and RECORD_TIMESTAMP maps to LONG (epoch ms) or STRING (ISO-8601)
- * ({@code INVALID_TRANSFORM}, {@code INVALID_MAPPING}); a {@code null} transform becomes {@link Transform.None}.
+ * <p>Rules:
+ *
+ * <ul>
+ *   <li>PAYLOAD needs {@code jsonPointer}; HEADER needs a non-blank {@code headerName} ({@code INVALID_MAPPING});
+ *   <li>{@code targetKey} is 1..128 characters of {@code a-z 0-9 _ . -}, starting with a letter
+ *       ({@code INVALID_TARGET_KEY}), and {@link AttributeKey#allowedAsEnrichmentTarget() allowed as an enrichment
+ *       target} ({@code RESERVED_KEY});
+ *   <li>a transform other than {@link Transform.None} needs {@code valueType} STRING ({@code INVALID_TRANSFORM});
+ *   <li>RECORD_TIMESTAMP maps to LONG (epoch milliseconds) or STRING (ISO-8601) ({@code INVALID_MAPPING});
+ *   <li>a {@code null} transform becomes {@link Transform.None}.
+ * </ul>
  *
  * @param source where the value is read
  * @param jsonPointer pointer for PAYLOAD, else {@code null}
  * @param headerName header for HEADER, else {@code null}
- * @param targetKey produced attribute key
- * @param valueType declared type of the produced value
- * @param transform value transform
- * @param required a missing value sends the event to the DLQ ({@code REQUIRED_FIELD_MISSING})
+ * @param targetKey the attribute to write
+ * @param valueType type of the written value
+ * @param transform the transform
+ * @param required whether an event without the value is rejected instead of skipping the attribute
  */
 public record FieldMapping(
         FieldSource source,
-        JsonPointerExpr jsonPointer,
+        JsonPointer jsonPointer,
         String headerName,
         AttributeKey targetKey,
         AttributeType valueType,
         Transform transform,
-        boolean required) {
-
-    /** 03 §5.4 V6. */
-    public static final String TARGET_KEY_PATTERN = "^[a-z][a-z0-9_.-]{0,127}$";
-}
+        boolean required) {}

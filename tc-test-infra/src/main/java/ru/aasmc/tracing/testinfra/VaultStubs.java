@@ -12,7 +12,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * WireMock stubs for the Vault KV v2 HTTP API (09 §1.3): {@code GET /v1/<mount>/data/<path>}. Each test uses its own
+ * WireMock stubs for the Vault KV v2 HTTP API: {@code GET /v1/<mount>/data/<path>}. Each test uses its own
  * unique path ({@link TestIds}), so stubs of different tests never collide.
  */
 public final class VaultStubs {

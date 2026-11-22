@@ -1,11 +1,11 @@
 package ru.aasmc.tracing.collector.domain.trace;
 
-/** Result of checking a span start against the clock (05 §3.6 rules 4 and 5). */
+/** What ingestion does with a span, judged by its start time. */
 public enum SpanTimeVerdict {
-    /** Inside {@code [now - fullDays, now + futureTolerance]}. */
+    /** Store the span. */
     ACCEPT,
-    /** After {@code now + futureTolerance}: the whole record is poison ({@code FUTURE_TIMESTAMP}, DLQ). */
+    /** Starts too far in the future: the whole message is rejected as broken. */
     FUTURE,
-    /** Before {@code now - fullDays}: the span is dropped (metric reason {@code EXPIRED}), the rest proceeds. */
+    /** Older than the retention period: drop this span, keep the others. */
     EXPIRED
 }

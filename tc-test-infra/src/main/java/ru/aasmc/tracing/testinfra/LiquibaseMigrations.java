@@ -17,7 +17,7 @@ import org.springframework.core.io.DefaultResourceLoader;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * Builds the schema exactly as production does (09 §1.3):
+ * Builds the schema exactly as production does:
  *
  * <ol>
  *   <li>runs {@code testinfra/iac-bootstrap.sql} as superuser: roles and the empty schema {@code tc} (owner
@@ -34,7 +34,7 @@ public final class LiquibaseMigrations {
     public static final String CHANGE_LOG = "classpath:db/changelog/db.changelog-master.yaml";
     public static final String SCHEMA = "tc";
     public static final String MIGRATOR_USER = "tc_migrator";
-    /** Changelog parameters; production values come from {@code tc.retention.*} (03 §7.2). */
+    /** Changelog parameters; production values come from {@code tc.retention.*}. */
     public static final Map<String, String> PARAMETERS = Map.of("fullDays", "7", "digestDays", "90");
 
     private static final String BOOTSTRAP_SCRIPT = "testinfra/iac-bootstrap.sql";

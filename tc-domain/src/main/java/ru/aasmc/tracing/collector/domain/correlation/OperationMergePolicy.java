@@ -4,20 +4,17 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * Rules of the union-find resolver (05 §4.11, 03 §6.3).
+ * Rules for linking traces into operations.
  *
  * <ul>
- *   <li><b>Survivor</b> (deterministic, order-independent): an operation with a display value beats a provisional
- *       one; otherwise the earlier {@code firstSeen}; otherwise the smaller id.
- *   <li><b>Merge window</b>: an observation may join an operation only if {@code observedAt} lies in {@code
- *       [firstSeen - window, lastSeen + window]}; otherwise the value is treated as reused and starts a new
- *       operation.
- *   <li><b>Hub guard</b>: no merge may produce more than {@code maxTracesPerOperation} traces.
+ *   <li><b>Survivor</b>: when two operations merge, the one with a display value wins over a provisional one, then
+ *       the one first seen earlier, then the smaller id. The choice does not depend on arrival order.
+ *   <li><b>Merge window</b>: a value seen at {@code t} joins an operation only if {@code t} lies in
+ *       {@code [firstSeen - window, lastSeen + window]}.
+ *   <li><b>Size limit</b>: no merge may produce more than {@code maxTracesPerOperation} traces.
  * </ul>
  *
- * <p>Invariant: {@code maxTracesPerOperation >= 1}. Immutable and thread-safe.
- *
- * @param maxTracesPerOperation {@code tc.correlation.max-traces-per-operation}
+ * @param maxTracesPerOperation the size limit, {@code >= 1}
  */
 public record OperationMergePolicy(int maxTracesPerOperation) {
 
@@ -27,16 +24,16 @@ public record OperationMergePolicy(int maxTracesPerOperation) {
         throw new UnsupportedOperationException();
     }
 
-    public boolean withinWindow(BusinessOperation operation, Instant observedAt, Duration mergeWindow) {
+    public boolean canJoin(BusinessOperation operation, Instant observedAt, Duration mergeWindow) {
         throw new UnsupportedOperationException();
     }
 
     /**
-     * Decides a merge of two different root operations of the same type.
+     * Decides the merge of two different operations of the same type.
      *
-     * @param combinedTraceCount distinct traces of the union
+     * @param combinedTraceCount distinct traces of both together
      */
-    public MergeDecision decide(BusinessOperation a, BusinessOperation b, int combinedTraceCount) {
+    public MergeDecision decideMerge(BusinessOperation a, BusinessOperation b, int combinedTraceCount) {
         throw new UnsupportedOperationException();
     }
 }

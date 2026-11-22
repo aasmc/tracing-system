@@ -1,24 +1,15 @@
 package ru.aasmc.tracing.collector.domain.correlation;
 
-/** Sealed result of {@link OperationMergePolicy#decide} (03 §6.3). */
+/** Whether two operations that turned out to share a value are merged. */
 public sealed interface MergeDecision {
 
-    /**
-     * Merge {@code loser} into {@code survivor}.
-     *
-     * @param survivor the operation that stays a root
-     * @param loser the operation that gets {@code merged_into = survivor.id}
-     */
-    record Merge(BusinessOperation survivor, BusinessOperation loser) implements MergeDecision {}
+    /** {@code absorbed} is merged into {@code survivor}. */
+    record Merge(BusinessOperation survivor, BusinessOperation absorbed) implements MergeDecision {}
 
     /**
-     * The hub guard refused the merge: the survivor would exceed the trace limit. Both stay separate; the resolver
-     * logs and counts it ({@code tc_correlation_hub_blocked_total}).
-     *
-     * @param survivor the operation that would have survived
-     * @param other the other operation
-     * @param combinedTraceCount traces the merged operation would have
+     * Not merged: the union would exceed the size limit. Usually a value shared by unrelated traces, such as a
+     * constant placeholder, which would otherwise glue everything into one giant operation.
      */
-    record HubBlocked(BusinessOperation survivor, BusinessOperation other, int combinedTraceCount)
+    record SizeLimitExceeded(BusinessOperation survivor, BusinessOperation other, int combinedTraceCount)
             implements MergeDecision {}
 }

@@ -1,48 +1,33 @@
 package ru.aasmc.tracing.collector.domain.attribute;
 
 /**
- * OTel attribute key, interned through the {@code attribute_key} dictionary (05 §3.4).
+ * Name of an attribute, e.g. {@code user_id} or {@code http.request.method}.
  *
- * <p>Invariants ({@code INVALID_ATTRIBUTE_KEY}): not blank; at most {@link #MAX_LENGTH} characters; no control
- * characters. Any producer key is accepted, including {@code tc.*}: reserved names restrict only what TCS itself
- * writes (enrichment target keys, see {@link #reservedForEnrichment()}). Ordered by {@link String#compareTo}, the
- * order used by the content hash.
+ * <p>Not blank and at most {@value #MAX_LENGTH} characters ({@code INVALID_ATTRIBUTE_KEY}). Services that send spans
+ * may use any key.
  *
- * @param value the key text
+ * @param value the key
  */
-public record AttributeKey(String value) implements Comparable<AttributeKey> {
+public record AttributeKey(String value) {
 
     public static final int MAX_LENGTH = 255;
 
-    /** Built-in indexed key, origin RESOURCE. */
-    public static final AttributeKey SERVICE_NAME = new AttributeKey("service.name");
-
-    /** Built-in indexed key, origin DERIVED, root spans only. */
-    public static final AttributeKey SPAN_NAME = new AttributeKey("span.name");
-
-    /** Built-in indexed key, origin DERIVED, value {@code ERROR} only. */
-    public static final AttributeKey STATUS = new AttributeKey("status");
-
-    /** {@code true} for the prefix {@code tc.}. */
-    public boolean isReservedForTcs() {
-        throw new UnsupportedOperationException();
-    }
-
-    /** {@code true} for {@link #SERVICE_NAME}, {@link #SPAN_NAME} and {@link #STATUS}. */
-    public boolean isBuiltIn() {
-        throw new UnsupportedOperationException();
-    }
-
     /**
-     * 03 §5.4 V7: keys an enrichment mapping may not target: prefixes {@code tc.}, {@code otel.}, {@code telemetry.},
-     * {@code service.} and the built-ins.
+     * Whether an enrichment mapping may write this key.
+     *
+     * <p>Enrichment copies fields of a client's Kafka events into trace attributes, e.g. an SMS delivery report
+     * becomes {@code sms.delivery.status=DELIVERED}. An admin chooses the target keys, so a careless or malicious
+     * mapping could overwrite attributes the trace already has, e.g. move it to another service by writing
+     * {@code service.name}. Every key is therefore allowed except these:
+     *
+     * <ul>
+     *   <li>{@code service.*}: identifies the service that produced the span;
+     *   <li>{@code otel.*} and {@code telemetry.*}: written by the OpenTelemetry SDK;
+     *   <li>{@code tc.*}: reserved for attributes the collector itself adds;
+     *   <li>{@code span.name} and {@code status}: search keys the collector fills from the span's name and status.
+     * </ul>
      */
-    public boolean reservedForEnrichment() {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public int compareTo(AttributeKey other) {
+    public boolean allowedAsEnrichmentTarget() {
         throw new UnsupportedOperationException();
     }
 }

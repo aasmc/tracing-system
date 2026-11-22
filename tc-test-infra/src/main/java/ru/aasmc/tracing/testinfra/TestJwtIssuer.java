@@ -25,8 +25,8 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * A fake OIDC issuer on {@link TcWireMock} (09 §1.3). Publishes the discovery document and the JWKS, and mints
- * RS256 JWTs carrying the TCS authorities (03 §4 security): roles in {@code realm_access.roles}
+ * A fake OIDC issuer on {@link TcWireMock}. Publishes the discovery document and the JWKS, and mints
+ * RS256 JWTs carrying the TCS authorities: roles in {@code realm_access.roles}
  * ({@code TC_VIEWER}, {@code TC_ADMIN}) and the scope {@code TC_PII}.
  *
  * <p>Tokens are timestamped with the system time, not the test clock, because Spring Security validates

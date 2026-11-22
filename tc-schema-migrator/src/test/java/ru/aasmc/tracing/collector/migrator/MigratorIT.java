@@ -15,7 +15,7 @@ import ru.aasmc.tracing.testinfra.TcContainersConfiguration;
 import ru.aasmc.tracing.testinfra.TcIntegrationTest;
 
 /**
- * The module variant of {@link TcIntegrationTest} (09 §0.3 T6). The migrator logs in as {@code tc_migrator}, like in
+ * The module variant of {@link TcIntegrationTest}. The migrator logs in as {@code tc_migrator}, like in
  * production, so the PostgreSQL service connection (container superuser) is switched off and the datasource is
  * registered here; everything else comes from the module's real {@code application.yaml}.
  */
@@ -25,7 +25,7 @@ import ru.aasmc.tracing.testinfra.TcIntegrationTest;
 @TcIntegrationTest(
         properties = {
             TcContainersConfiguration.POSTGRES_SERVICE_CONNECTION_PROPERTY + "=false",
-            // spike 0-11: the real master changelog plus throw-away convention checks (test resources)
+            // the real master changelog plus throw-away convention checks (test resources)
             "spring.liquibase.change-log=classpath:db/spike/spike-master.yaml"
         })
 @Import(MigratorIT.MigratorDataSource.class)

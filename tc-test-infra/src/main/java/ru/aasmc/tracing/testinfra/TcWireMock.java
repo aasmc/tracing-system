@@ -5,11 +5,11 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 import com.github.tomakehurst.wiremock.WireMockServer;
 
 /**
- * JVM-wide WireMock server for the external HTTP endpoints of TCS (09 §0.3 T4): the OIDC issuer (discovery document
+ * JVM-wide WireMock server for the external HTTP endpoints of TCS: the OIDC issuer (discovery document
  * and JWKS, {@link TestJwtIssuer}) and the secret store (Vault KV v2, {@link VaultStubs}). Nothing else is mocked.
  *
  * <p>Uses the shaded {@code wiremock-standalone} artifact, so WireMock's Jetty and Jackson 2 cannot clash with the
- * Jetty 12 / Jackson 3 versions managed by Spring Boot 4 (spike 0-8).
+ * Jetty 12 / Jackson 3 versions managed by Spring Boot 4.
  */
 public final class TcWireMock {
 

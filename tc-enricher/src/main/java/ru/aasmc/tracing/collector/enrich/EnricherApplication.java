@@ -3,7 +3,7 @@ package ru.aasmc.tracing.collector.enrich;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-/** Entry point of {@code tc-enricher} (Consumes client enrichment topics defined at runtime (03 §3)). */
+/** Entry point of {@code tc-enricher} (consumes client enrichment topics defined at runtime). */
 @SpringBootApplication
 public class EnricherApplication {
 

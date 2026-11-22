@@ -3,18 +3,18 @@ package ru.aasmc.tracing.collector.domain.correlation;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
 
 /**
- * An attribute key that belongs to a correlation type (05 §4.10).
+ * An attribute whose value links traces into one business operation.
  *
- * <p>Invariants ({@code INVALID_CORRELATION_TYPE}): key and role not null; {@code stepLabel} is {@code null} or
- * 1..{@link #MAX_STEP_LABEL} characters.
+ * <p>Key and role are set; {@code stepLabel} is {@code null} or 1..{@value #MAX_STEP_LABEL} characters
+ * ({@code INVALID_CORRELATION_TYPE}).
  *
- * @param id {@code correlation_key.id}
- * @param keyId {@code attribute_key.id}
- * @param key the attribute key
- * @param role PRIMARY or ALIAS
- * @param stepLabel business step evidenced by the key, or {@code null}
+ * @param id key id
+ * @param key the attribute
+ * @param role primary or alias
+ * @param stepLabel the business step a trace carrying this key performs, e.g. {@code token-exchange}, or
+ *     {@code null}
  */
-public record CorrelationKey(int id, int keyId, AttributeKey key, KeyRole role, String stepLabel) {
+public record CorrelationKey(int id, AttributeKey key, KeyRole role, String stepLabel) {
 
     public static final int MAX_STEP_LABEL = 64;
 }

@@ -11,7 +11,8 @@ import org.springframework.boot.liquibase.autoconfigure.LiquibaseProperties;
 import ru.aasmc.tracing.testinfra.JdbcProbe;
 
 /**
- * Spike 0-11 (09 §1.2): Liquibase 5.0.4 through Spring Boot 4.1.3's auto-configuration, with the migrator's real
+ * Checks the Liquibase conventions the changelogs rely on (object ownership, functions, concurrent indexes,
+ * changelog parameters, grants), running through Spring Boot's auto-configuration with the migrator's real
  * {@code application.yaml}. Assertions run on an independent superuser connection ({@link JdbcProbe}).
  */
 @MigratorIT
@@ -23,7 +24,7 @@ class LiquibaseSpikeIT {
     LiquibaseProperties liquibase;
 
     @Test
-    @DisplayName("0-11 the spring.liquibase.* property names of 03 §7.2 bind")
+    @DisplayName("the spring.liquibase.* properties bind")
     void given_migratorYaml_when_bound_then_liquibasePropertiesAsDesigned() {
         assertThat(liquibase.isEnabled()).isTrue();
         assertThat(liquibase.getDefaultSchema()).isEqualTo("tc");
@@ -34,7 +35,7 @@ class LiquibaseSpikeIT {
     }
 
     @Test
-    @DisplayName("0-11 Hikari connection-init-sql SET ROLE tc_owner applies to Liquibase's connection")
+    @DisplayName("Hikari connection-init-sql SET ROLE tc_owner applies to Liquibase's connection")
     void given_migratorLogsInAsTcMigrator_when_changesetCreatesTable_then_ownedByTcOwner() {
         assertThat(db.tableOwner("tc", "spike_owned")).isEqualTo("tc_owner");
         assertThat(db.tableOwner("tc", "spike_param")).isEqualTo("tc_owner");
@@ -47,13 +48,13 @@ class LiquibaseSpikeIT {
     }
 
     @Test
-    @DisplayName("0-11 splitStatements:false keeps a $$ function body intact")
+    @DisplayName("splitStatements:false keeps a $$ function body intact")
     void given_splitStatementsFalse_when_applied_then_functionWorks() {
         assertThat(db.scalar(Integer.class, "SELECT tc.spike_fn()")).isEqualTo(42);
     }
 
     @Test
-    @DisplayName("0-11 runInTransaction:false allows CREATE INDEX CONCURRENTLY; the index is valid")
+    @DisplayName("runInTransaction:false allows CREATE INDEX CONCURRENTLY; the index is valid")
     void given_runInTransactionFalse_when_applied_then_concurrentIndexValid() {
         assertThat(db.scalar(
                         Boolean.class,
@@ -62,14 +63,14 @@ class LiquibaseSpikeIT {
     }
 
     @Test
-    @DisplayName("0-11 ${fullDays}/${digestDays} are substituted from spring.liquibase.parameters.*")
+    @DisplayName("${fullDays}/${digestDays} are substituted from spring.liquibase.parameters.*")
     void given_changelogParameters_when_applied_then_substituted() {
         assertThat(db.rows("SELECT full_days, digest_days FROM tc.spike_param"))
                 .containsExactly(Map.of("full_days", 7, "digest_days", 90));
     }
 
     @Test
-    @DisplayName("0-11 changesets are recorded in tc.databasechangelog, which the SchemaVersionGuard query reads")
+    @DisplayName("changesets are recorded in tc.databasechangelog, which the SchemaVersionGuard query reads")
     void given_appliedChangesets_when_queryingLikeSchemaVersionGuard_then_found() {
         List<String> ids = db.jdbc()
                 .queryForList(

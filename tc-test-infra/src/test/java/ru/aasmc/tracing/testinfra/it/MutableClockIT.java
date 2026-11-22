@@ -12,7 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.web.servlet.client.RestTestClient;
 import ru.aasmc.tracing.testinfra.MutableClock;
 
-/** 0-T4, and spike 0-7: the HTTP client of full-context web tests is Spring Framework 7's {@link RestTestClient}. */
+/** The test clock drives production code; full-context web tests call it with {@link RestTestClient}. */
 @InfraIT
 class MutableClockIT {
 
@@ -31,14 +31,14 @@ class MutableClockIT {
     }
 
     @Test
-    @DisplayName("0-T4 the context's Clock bean is the mutable test clock, in UTC")
+    @DisplayName("the context's Clock bean is the mutable test clock, in UTC")
     void given_context_when_injectingClock_then_mutableClock() {
         assertThat(clock).isSameAs(mutableClock);
         assertThat(clock.getZone().getId()).isEqualTo("Z");
     }
 
     @Test
-    @DisplayName("0-T4 setting and advancing the clock changes what production code observes, over real HTTP")
+    @DisplayName("setting and advancing the clock changes what production code observes, over real HTTP")
     void given_clockSetAndAdvanced_when_endpointReadsClock_then_seesTestTime() {
         Instant t0 = Instant.parse("2026-11-21T23:59:59Z");
         mutableClock.setInstant(t0);

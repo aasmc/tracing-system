@@ -8,8 +8,8 @@ import java.time.ZoneOffset;
 import java.util.Objects;
 
 /**
- * A {@link Clock} that tests set and advance (09 §0.3 T10). Production code reads time only from the {@code Clock}
- * bean; {@link ClockTestConfiguration} replaces it with this one. Thread-safe. Always UTC, like the system (04 §8.1).
+ * A {@link Clock} that tests set and advance. Production code reads time only from the {@code Clock}
+ * bean; {@link ClockTestConfiguration} replaces it with this one. Thread-safe. Always UTC, like the system.
  */
 public final class MutableClock extends Clock {
 

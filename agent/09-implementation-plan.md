@@ -23,7 +23,7 @@ Every layer goes through the same five steps, in this order. A step may not star
 | Step | Name | Output | Done when |
 |---|---|---|---|
 | **a** | **Design interfaces and their API** | Java interfaces, records, sealed result types, error codes, Javadoc contracts (pre/post-conditions, invariants, thread-safety), for REST: the OpenAPI document | Reviewed against 03/04/05; compiles; no implementation bodies beyond `throw new UnsupportedOperationException()` |
-| **b** | **Prepare the test model** | Builders, Object Mothers, scenario datasets, golden files, container/WireMock fixtures, custom AssertJ assertions for the layer | Test model compiles; it is reused by the tests of this and all higher layers |
+| **b** | **Prepare the test model** | Builders, Object Mothers, scenario datasets, golden files, container/WireMock fixtures; custom AssertJ assertions only where plain `isEqualTo` / `usingRecursiveComparison()` on records cannot express the check | Test model compiles; it is reused by the tests of this and all higher layers |
 | **c** | **Write the tests (red)** | Tests for every contract of step **a**: plain JUnit for the domain layer, full-context integration tests for all other layers (§0.3) | All tests compile and **fail** for the right reason (`UnsupportedOperationException` or assertion failure, never a context-startup error) |
 | **d** | **Write the implementation (green)** | Production code | All tests of the layer and of all lower layers pass |
 | **e** | **Refactor and gate** | Clean code, updated docs | The layer checklist (gate) is ticked |
@@ -68,7 +68,7 @@ These rules apply to every Java test in the repository; T2–T10 do not concern 
 | T8 | **Isolation through unique data, not cleanup.** Every test generates its own trace ids, source names, keys and topic names (`TestIds`). Configuration tables that are singletons (`config_revision`, `retention_policy`) are reset by `ConfigTableReset` in `@BeforeEach` only for the test classes that change them. |
 | T9 | **Asynchrony is awaited, never slept**: Awaitility with explicit timeouts (default 15 s, Kafka 30 s). |
 | T10 | **Time is controlled**: production code reads time only from the `Clock` bean; partition creation in tests goes through `TestPartitions`, which uses the production `PartitionDdl`. |
-| T11 | Integration test classes are named `*IT` and run by `maven-failsafe-plugin` in `mvn verify`. Domain tests are named `*Test` and run by `maven-surefire-plugin` in `mvn test`. Test methods use the `given_when_then` naming style and carry their **test id** (e.g. `@DisplayName("D-07 …")`) for traceability to the checklist. |
+| T11 | Integration test classes are named `*IT` and run by `maven-failsafe-plugin` in `mvn verify`. Domain tests are named `*Test` and run by `maven-surefire-plugin` in `mvn test`. Test methods use the `given_when_then` naming style and a plain-language `@DisplayName`; test ids appear only in this plan, mapped to test classes. |
 | T12 | Architecture rules (ArchUnit: `tc-domain` has no Spring dependency, `ingest.*` does not use `query.*`, DDL only in `tc-schema-migrator` and `persistence.partition`) are **build checks**, not functional tests. They are plain JUnit 5 ArchUnit tests (no context needed: they analyse bytecode). |
 
 **Why the domain layer is tested without Spring.** `tc-domain` contains only framework-free Java (records, value objects, policies, state machines) and the ArchUnit rule keeps it that way. There is no context to start and no I/O to integrate with, so its tests are plain JUnit 5 tests: they run in milliseconds and give the fastest feedback in the TDD cycle. Checks that need the real database — `TraceId` ↔ `uuid`, `SpanId` ↔ signed `bigint`, and `DigestValueHasher` ↔ PostgreSQL `encode(sha256(convert_to(v,'UTF8')),'hex')` — belong to the data layer and are covered there (P-23) inside the full context with Testcontainers.
@@ -189,18 +189,18 @@ Reference: 05-domain-model.md (§3–§7), 03 §9.1, ADR-13 types.
 - [x] **1a-8 PII**: `PiiClass` (NONE, PERSONAL, SECRET), `PiiPolicy` (key patterns → class), `PiiMasker` (masking rules of 05 §7.3).
 - [x] **1a-9 Domain events** (internal, not Kafka): `TraceFragmentIngested`, `EnrichmentApplied`, `CorrelationObserved`, `BusinessOperationMerged`, `EnrichmentSourceActivated`, `TraceDayCompacted`, `BusinessOperationCompacted`, `PartitionDropDeferred`, `RetentionTiersChanged`.
 - [x] **1a-10 Error model**: `DomainViolation` (code + message) with the codes used by the control plane (03 §5.4 V1–V15, §5.9 R1–R3, O1–O5, `SECRET_KEY_REQUIRES_TRANSFORM`, `PII_RETAINED_IN_CLEAR`, …). Constructors throw `DomainViolationException`; policies return sealed results.
-- [x] **1a-11** API review: every public type has Javadoc with its invariants and an explicit link to the 05 section it implements. *Checked by a script over all 113 source files; results, names and deviations in §2.6.*
+- [x] **1a-11** API review: every public type has Javadoc with its invariants and an explicit link to the 05 section it implements. *Revised: Javadoc is self-contained instead (§2.6).*
 
 ### 2.2 Step b — Domain test model (`tc-domain` test-jar, package `…testmodel.domain`)
 
-- [ ] **1b-1** Test dependencies of `tc-domain`: JUnit 5, AssertJ, and jqwik or JUnit `@ParameterizedTest` for the property-style checks (commutativity, round-trips). No Spring, no Testcontainers. Policies are instantiated directly (`new OperationOutcomeEvaluator()`), which also proves they have no hidden dependencies.
-- [ ] **1b-2** Builders with sensible defaults: `SpanBuilder`, `TraceFragmentBuilder`, `TraceSummaryBuilder`, `EnrichmentSourceDefinitionBuilder`, `CorrelationTypeBuilder`, `OutcomeRuleBuilder`, `IndexedAttributeBuilder`.
-- [ ] **1b-3** **Object Mother `IdpScenario`** (the worked example of 06): services `idp-gateway`, `idp-auth-service`, `idp-otp-service`, `idp-token-service`; traces T1 (first factor, `user_id=u-42`, `client_id=bookstore-web`, `auth.factor=PASSWORD`, `idp.auth_session_id=as-777`), T2 (second factor, `auth.factor=SMS`, same session, `oauth.authorization_code=code-abc`), T3 (token exchange, `oauth.authorization_code=code-abc`); correlation type `idp.login` (PRIMARY `idp.auth_session_id`, ALIAS `oauth.authorization_code`, step labels `first-factor`, `second-factor`, `token-exchange`, outcome rule with `finalStepLabel = token-exchange`); enrichment source `sms-gateway.delivery-reports`.
-- [ ] **1b-4** **Attribute matrix**: all eight OTel attribute types, LONG > 2^53, negative zero, NaN/Infinity doubles, empty arrays, unicode, `\u0000`, 4 KiB + 1 strings.
-- [ ] **1b-5** **W3C trace-context vectors**: valid, version `ff`, unknown future version with extra fields, all-zero trace id / span id, uppercase hex, wrong lengths, flags variations.
-- [ ] **1b-6** **Time edge cases**: midnight-crossing traces, spans in the future, spans older than `fullDays`, nanosecond truncation cases.
-- [ ] **1b-7** **Union-find orderings** for the IdP scenario: T1→T2→T3, T3→T2→T1, T2→T3→T1, plus a merge outside the merge window and an oversized merge.
-- [ ] **1b-8** Custom AssertJ assertions: `TraceSummaryAssert`, `TransitionAssert`, `OutcomeAssert`.
+- [x] **1b-1** Test dependencies of `tc-domain`: JUnit 5, AssertJ, and jqwik or JUnit `@ParameterizedTest` for the property-style checks (commutativity, round-trips). No Spring, no Testcontainers. Policies are instantiated directly (`new OperationOutcomeEvaluator()`), which also proves they have no hidden dependencies.
+- [x] **1b-2** Builders with sensible defaults: `SpanBuilder`, `TraceFragmentBuilder`, `TraceSummaryBuilder`, `EnrichmentSourceDefinitionBuilder`, `CorrelationTypeBuilder`, `OutcomeRuleBuilder`, `IndexedAttributeBuilder`.
+- [x] **1b-3** **Object Mother `IdpScenario`** (the worked example of 06): services `idp-gateway`, `idp-auth-service`, `idp-otp-service`, `idp-token-service`; traces T1 (first factor, `user_id=u-42`, `client_id=bookstore-web`, `auth.factor=PASSWORD`, `idp.auth_session_id=as-777`), T2 (second factor, `auth.factor=SMS`, same session, `oauth.authorization_code=code-abc`), T3 (token exchange, `oauth.authorization_code=code-abc`); correlation type `idp.login` (PRIMARY `idp.auth_session_id`, ALIAS `oauth.authorization_code`, step labels `first-factor`, `second-factor`, `token-exchange`, outcome rule with `finalStepLabel = token-exchange`); enrichment source `sms-gateway.delivery-reports`.
+- [x] **1b-4** **Attribute matrix**: all eight OTel attribute types, LONG > 2^53, negative zero, NaN/Infinity doubles, empty arrays, unicode, `\u0000`, 4 KiB + 1 strings.
+- [x] **1b-5** **W3C trace-context vectors**: valid, version `ff`, unknown future version with extra fields, all-zero trace id / span id, uppercase hex, wrong lengths, flags variations.
+- [x] **1b-6** **Time edge cases**: midnight-crossing traces, spans in the future, spans older than `fullDays`, nanosecond truncation cases.
+- [x] **1b-7** **Union-find orderings** for the IdP scenario: T1→T2→T3, T3→T2→T1, T2→T3→T1, plus a merge outside the merge window and an oversized merge.
+- [x] **1b-8** ~~Custom AssertJ assertions: `TraceSummaryAssert`, `TransitionAssert`, `OutcomeAssert`.~~ Replaced by plain AssertJ on records plus one helper `Violations.assertViolation(code, call)` (§2.6).
 
 ### 2.3 Step c — Domain tests (red)
 
@@ -212,16 +212,16 @@ Reference: 05-domain-model.md (§3–§7), 03 §9.1, ADR-13 types.
 | D-04 | `ResourceHasherTest` | Hash is stable across attribute order and JVM restarts (golden values); differs on any value change | ADR-06 |
 | D-05 | `TraceSummaryMergeTest` | Merge is commutative and associative over random fragment permutations of `IdpScenario`; root detection; `service_ids` union | UC-01, UC-02 |
 | D-06 | `IngestLimitsTest` | Each limit is enforced at its boundary (exact limit passes, limit + 1 fails or truncates and sets the flag) | UC-01, UC-03 |
-| D-07 | `SourceDefinitionTest` | Invariants: unique target keys, reserved prefixes rejected, JSON Pointer syntax, transform arguments (RE2/J compiles) | UC-04 |
+| D-07 | `EnrichmentSourceDefinitionTest` | Invariants: unique target keys, reserved prefixes rejected, JSON Pointer syntax, transform arguments (RE2/J compiles) | UC-04 |
 | D-08 | `SourceStatusTransitionTest` | Every allowed transition succeeds and every forbidden one returns the expected violation | UC-05 |
 | D-09 | `IndexedAttributeTest` | Status transitions; `retainInDigest` requires the key to be indexed; `DISABLED` with `retainInDigest` is a violation | UC-07, UC-23 |
 | D-10 | `RetentionTiersTest` | R1–R3 boundaries (`fullDays` 1 / 2, `digestDays` −1 / 0, `fullDays` vs merge window) | UC-23 |
 | D-11 | `OperationMergePolicyTest` | All orderings of 1b-7 converge to the same survivor and membership; window and size guard respected | UC-09, UC-10 |
-| D-12 | `OperationOutcomeEvaluatorTest` | Rule order 1–4 with one test per branch (SUCCESS via outcome key, FAILED via failure value, UNKNOWN for other values, FAILED via error, SUCCESS / INCOMPLETE via final step, SUCCESS without rule) | UC-21 |
-| D-13 | `DigestValueHasherTest` | `SHA256` output equals published SHA-256 test vectors (lowercase hex, UTF-8) for the attribute matrix; `MASK` output (PostgreSQL equality in P-23) | UC-21, UC-22 |
-| D-14 | `CompactionStateTest` | State machine transitions incl. resume (`RUNNING` with `last_chunk_end`) and `FAILED → RUNNING` | UC-21 |
-| D-15 | `PiiMaskerTest` | PERSONAL masked without `TC_PII`, shown with it; SECRET always masked; hashed PERSONAL shown only with `TC_PII` | UC-19 |
-| D-16 | `TraceContextExtractionTest` | Parsing the W3C vectors of 1b-5 with `Traceparent.parse` and the `TraceparentHeader` / `RawHeader` / `PayloadPointer` rules (version `ff` invalid; future versions accepted by prefix) | UC-06 |
+| D-12 | `OutcomeRuleTest` | Rule order 1–4 with one test per branch (SUCCESS via outcome key, FAILED via failure value, UNKNOWN for other values, FAILED via error, SUCCESS / INCOMPLETE via final step, SUCCESS without rule) | UC-21 |
+| D-13 | `DigestTransformTest` | `SHA256` output equals published SHA-256 test vectors (lowercase hex, UTF-8) for the attribute matrix; `MASK` output (PostgreSQL equality in P-23) | UC-21, UC-22 |
+| D-14 | `DigestProgressTest` | State machine transitions incl. resume (`RUNNING` with `last_chunk_end`) and `FAILED → RUNNING` | UC-21 |
+| D-15 | `SensitivityPolicyTest` | PERSONAL masked without `TC_PII`, shown with it; SECRET always masked; hashed PERSONAL shown only with `TC_PII` | UC-19 |
+| D-16 | `TraceContextSourceTest` | Parsing the W3C vectors of 1b-5 with `Traceparent.parse` and the `TraceparentHeader` / `RawHeader` / `PayloadPointer` rules (version `ff` invalid; future versions accepted by prefix) | UC-06 |
 
 - [ ] **1c-1** All tests D-01…D-16 written and failing for the right reason.
 
@@ -237,44 +237,21 @@ Reference: 05-domain-model.md (§3–§7), 03 §9.1, ADR-13 types.
 - [ ] ArchUnit: `tc-domain` main code has no Spring, JDBC or Kafka imports.
 - [ ] 05-domain-model.md updated where names or invariants changed.
 
-### 2.6 Phase-1a results (2026-11-22)
+### 2.6 Phase-1a/1b results (revised 2026-11-22)
 
-**What was built.** The complete public API of `tc-domain` (113 source files, base package `ru.aasmc.tracing.collector.domain`), compiled with `-Werror` and formatted. Packages follow 05's layout: `trace`, `attribute`, `resource`, `enrichment`, `correlation`, `config`, `digest`, `event`, `dlq`, plus the error model in the base package. `mvn verify` of the reactor is green; `DomainArchitectureTest` now runs against real classes (its "empty package" allowance was removed).
+**Code rules (apply to every later phase).** Write only what a current test or caller needs (KISS, DRY, YAGNI). Javadoc is self-contained: it explains the rule itself and never cites ADRs, design-doc sections, use cases or plan items; traceability lives in this plan only. Records are compared with plain AssertJ (`isEqualTo`, `usingRecursiveComparison()`); custom assertion classes only when that cannot express a check.
 
-**How "no implementation" was applied to records.** Records are declared with their components, constants and Javadoc invariants, but **without** compact constructors; every method, static factory and interface default throws `UnsupportedOperationException`. Constants such as `AttributeKey.SERVICE_NAME` and `RetentionTiers.DEFAULT` therefore load, the step-b builders can construct objects, and the step-c invariant tests fail with an assertion error ("expected `DomainViolationException`, nothing was thrown") — a right reason under §0.1. The compact constructors with the invariants are step d. The only class with a stub constructor is `Transform.RegexExtract` (a final class, see below).
+**Domain API (`tc-domain`, 64 files).** Packages `trace`, `attribute`, `resource`, `enrichment`, `correlation`, `config`, `digest` and the error model in the base package. Records carry components and documented rules without compact constructors; methods throw `UnsupportedOperationException` until step d. Error model: `DomainViolation(ViolationCode, message)`, `DomainViolationException extends IllegalArgumentException`, and the sealed `Transition<S>` (`Changed`, `Unchanged`, `Rejected`) returned by `SourceStatus`, `IndexStatus` and `DigestStatus`; aggregates (`EnrichmentSource.moveTo`, `IndexedAttribute.moveTo`, `DigestProgress.startOrResume/…`) throw the rejection.
 
-**Error model.** `DomainViolation(ViolationCode, message)`; `DomainViolationException` **extends `IllegalArgumentException`**, so the 05 sketches stay valid, and carries the violation. `ViolationCode` holds every code of 03 §5.4 (V1–V15), §5.9 (R1–R3, O1–O5, digest-retention and PII codes) and 06 (`SOURCE_ACTIVE`, `TOPIC_IMMUTABLE`), plus new codes for value-object invariants (`INVALID_TIME_RANGE`, `INVALID_ATTRIBUTE_KEY`, `INVALID_SPAN`, `INVALID_TRACE_SUMMARY`, `CONTENT_HASH_MISMATCH`, …), lifecycle (`SOURCE_NOT_ACTIVE`, `SOURCE_DELETED`, `INVALID_INDEX_TRANSITION`, `INVALID_COMPACTION_TRANSITION`, `BUILT_IN_KEY`) and `INVALID_TARGET_KEY` (V6 split into syntax and uniqueness). State machines return the sealed generic **`Transition<S>`** (`Changed`, `Unchanged` for idempotent requests, `Rejected` with the violation); aggregate methods (`EnrichmentSource.activate()`, `IndexedAttribute.disable()`, `CompactionState.done()`, …) throw the rejected violation. Other sealed results: `MergeDecision` (`Merge` / `HubBlocked`), `SpanTimeVerdict`, `OutcomeEvaluation`, `ForestResolution`.
+The first 1a draft (113 files) was cut to what D-01…D-16 exercise:
 
-**Names: plan (1a items) → code.** 05's names were kept where 05 and this plan differed; the policy classes named only by the plan were added.
+- **Removed until the phase that needs them:** domain events; DLQ types; `KafkaConnection`, secrets and SASL types; `EnrichmentRecord`, `SourceRevision`; `ConsumerOptions`, `EventFilter`, `StartFrom`, `OnMissingTraceContext`, `PayloadFormat`; `RetentionPolicy`, `Granularity`, `RetentionTier`, `ConfigRevision`; `TraceDigest`, `BusinessOperationDigest`, `DigestStep`, `TraceOutcome`, `CompactionExclusion`; `Completeness`; `TraceFragment`, `KafkaCoordinates`; `Resource`, `InstrumentationScope`, `ServiceId`, `SpanNameId`; `CorrelationValue`, `CorrelationNode`, `CorrelationTypeStatus`; `OriginScope`, `AttributeOrigin`; wire/storage codes of `SpanKind`, `StatusCode`, `SpanFlag`; and unused methods and components (e.g. `IndexedAttribute.backfillCursor`, the digest read window).
+- **Merged:** outcome evaluation is `OutcomeRule.evaluate(members)` (no separate evaluator); SHA-256 and masking are `DigestTransform.apply` (no `DigestValueHasher`); classification and masking are `SensitivityPolicy.sensitivityOf/displayValue` (no `PiiMasker`); `IngestLimits` no longer duplicates the 4 KiB string limit of `AttributeValue`; `RetentionTiers.requireFullDataOutlives(mergeWindow)` is the single merge-window bound; all source life-cycle errors are `INVALID_SOURCE_TRANSITION`.
+- **Still deviating from 05:** name pattern 3..63 characters; at most 50 field mappings; `Mask` keeps 0..16 characters; only enrichment targets reject reserved keys; `TimeRange` requires `from < to`; `SpanEvent` has absolute `epochNanos`; index token cap 512 bytes.
+- **Renamed for readability** (names must read correctly at the call site): `ScopeId` → `InstrumentationScopeId`; `Span.flags`/`dropped` → `collectorFlags`/`droppedByProducer`; `SpanLinkRef` → `SpanLink`; `RootInfo` → `RootSpan`; `JsonPointerExpr` → `JsonPointer`; `TraceContextExtraction` (`RawHeader`, `PayloadPointer`) → `TraceContextSource` (`TraceIdHeader`, `PayloadField`); `ExtractedTraceContext` → `TraceContext`; `SourceDefinition` → `EnrichmentSourceDefinition`; `PiiClass`/`PiiPolicy` → `Sensitivity`/`SensitivityPolicy`; `CompactionState`/`CompactionStatus` → `DigestProgress`/`DigestStatus`; `OperationForest` (`load`, `observe`, `resolve`) → `OperationLinker` (`addExisting`, `addObservation`, `link`); `ForestResolution` → `LinkingResult`; `HubBlocked` → `SizeLimitExceeded`; `RetentionTiers.fullDays` → `fullDataDays`; booleans `truncated`/`retainInDigest` → `wasTruncated`/`retainedInDigest`; `AttributeKey.reservedForEnrichment()` → `allowedAsEnrichmentTarget()`.
+- **Open for step d:** xxHash64 implementation of `ResourceHasher` (library or small pure-Java version, checked by golden values).
 
-| Plan name | Code | Note |
-|---|---|---|
-| `AttrValue` | `AttributeValue` (sealed, 8 nested records) | 05 name; `StringArrayValue` gained a `truncated` component |
-| `EnrichmentSourceDefinition`, `TraceContextDef`, `ValueTransform`, `FilterDef` | `SourceDefinition`, `TraceContextExtraction`, `Transform`, `EventFilter` | 05 names |
-| `SourceStatus.transitionTo` → `Transition` | as planned; also `IndexStatus`, `CompactionStatus` | generic `Transition<S>` in the base package |
-| `Tier` | `RetentionTier` | 05 name |
-| `ResourceRef`, `ResourceHasher` | `ResourceId`, `ResourceHasher` | `ResourceHasher` replaces 05's `ContentHash`; scope encoding and array-token separator specified |
-| `OperationMergePolicy` | `OperationMergePolicy` (survivor, window, hub guard) + `OperationForest` (union-find, one type per tick) + `ForestResolution`, `CorrelationNode`, `MergeDecision` | survivor rule moved here from `BusinessOperation.survivor` |
-| `OperationOutcomeEvaluator` | `OperationOutcomeEvaluator` + `MemberTrace`, `OutcomeEvaluation` | replaces 05's `OutcomeRule.evaluate`; `OutcomeRule` is data only |
-| `DigestValueHasher` | `attribute.DigestValueHasher` | next to `DigestTransform` to avoid a package cycle |
-| `PiiPolicy`, `PiiMasker` | as planned, in `attribute` | `PiiPolicy` uses globs (`*.phone`) instead of 05's regex entries |
-| `IngestLimits` | `trace.IngestLimits` + `SpanTimeVerdict`, `attribute.TruncatedText` | limits incl. 128 events/links and the 512-byte index token |
-| — | `trace.Traceparent` | W3C `traceparent` parser for D-16 |
-| — | `enrichment.ConsumerOptions`, `ExtractedTraceContext` | V13 overrides; result of `TraceContextExtraction.interpret` |
-
-**Deviations from 05 (contract changes; 05 carries a pointer to this list).**
-1. Name pattern `^[a-z0-9][a-z0-9._-]{2,62}$` (V1) instead of `{1,62}`; at most **50** field mappings (V5) instead of 64; `MASK` transform argument **0..16** (V9) instead of 0..8.
-2. Enrichment target keys reject the V7 prefixes `tc.`, `otel.`, `telemetry.`, `service.` and the built-ins (`AttributeKey.reservedForEnrichment()`); `AttributeKey` itself accepts any producer key, including `tc.*` (1a-1 said "no reserved prefix", which would reject producer data).
-3. `TimeRange` requires `from < to` (05 allowed `from == to`).
-4. `SpanEvent` carries absolute `epochNanos` (as the wire and `span.events` jsonb do) instead of an offset.
-5. `IndexedAttribute` has the `backfillCursor` component that 05 omitted "for brevity"; `retain(...)` takes the PII class, `acknowledgePii` and `force`, enforcing `PII_RETAINED_IN_CLEAR`, `SECRET_KEY_REQUIRES_TRANSFORM` and `DIGEST_TRANSFORM_CHANGE` in the domain.
-6. `SourceDefinition` has a `consumer` (`ConsumerOptions`) component (03 §4 "definition.consumer").
-7. `DeadLetter` drops `targetTopic` (derived from `DeadLetterReason.topic()`); `DeadLetterReason` gains `PAYLOAD_TOO_LARGE` (03 §4).
-8. The index token cap is **512 bytes** (03, 04) — 05 §4.9 said 256 characters.
-9. `CompactionExclusion` rejects any all-`%` pattern (`PATTERN_TOO_BROAD`, 03 §5.9), with or without a service name.
-10. `RetentionTiers.requireMergeWindowFits` implements O5's tier bound (`window ≤ fullDays − 1 day`).
-
-**Not in 1a (deferred).** `ConfigSnapshot` (loaded by the data layer; Phase 2/3), the drop-gate decision of C6 (`PartitionManager`, Phase 3; `CompactionState.readWindow` is already here), and xxHash64: `ResourceHasher.xxHash64` is specified; step d decides between `zero-allocation-hashing` and a small pure-Java implementation checked against golden values (D-04).
+**Test model (`tc-domain` test-jar, package `…testmodel.domain`, 13 classes).** `DomainIds`, `TestTime` (hex ids and epoch nanos without production code), `AttributesBuilder`, `SpanBuilder`, `TraceSummaryBuilder` (with `expectedOf`, the reference summary for D-05), `BusinessOperationBuilder`, `Permutations` (all orders, seeded random chunks; no jqwik), `Violations.assertViolation`, and the data sets `IdpScenario`, `AttributeMatrix`, `TraceContextVectors`, `TimeEdgeCases`, `ArrivalOrders`. Small records (`CorrelationType`, `OutcomeRule`, `IndexedAttribute`, `EnrichmentSource`, `EnrichmentSourceDefinition`) are built with their constructors. `IdpScenario` follows 06 for step labels (`authentication`, `token-exchange`), because a label belongs to one of the type's two keys.
 
 ---
 
@@ -635,8 +612,8 @@ The Java rules T1–T12 do not apply to the TypeScript code. The same spirit doe
 - [ ] `tc-test-infra` complete; 0-T1…0-T5 green; gate passed — all green locally; gate waits for the first CI run
 
 **Phase 1 — Domain**
-- [x] 1a Interfaces and API designed and reviewed (1a-1…1a-11) — §2.6
-- [ ] 1b Domain test model ready (1b-1…1b-8)
+- [x] 1a Interfaces and API designed and reviewed (1a-1…1a-11) — §2.6, trimmed
+- [x] 1b Domain test model ready (1b-1…1b-8) — §2.6
 - [ ] 1c Tests D-01…D-16 red
 - [ ] 1d Implementation green
 - [ ] 1e Gate passed

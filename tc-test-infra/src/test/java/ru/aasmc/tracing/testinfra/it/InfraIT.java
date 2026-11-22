@@ -9,7 +9,7 @@ import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureRestTe
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import ru.aasmc.tracing.testinfra.TcIntegrationTest;
 
-/** The module variant of {@link TcIntegrationTest}: every test class of this module uses it (09 §0.3 T6). */
+/** The module variant of {@link TcIntegrationTest}: every test class of this module uses it, so the context starts once. */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 @Documented

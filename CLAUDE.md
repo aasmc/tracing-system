@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Layout
 
-The root is not a git repo. It holds the Trace Collector System (TCS) reactor plus two independent Maven projects (Spring Boot 4.1.x, Java 25, Jackson 3 under `tools.jackson.*`):
+The root is a git repo (branch `main`); `opentelemetry-demo/` and `otlp-kafka-export-tracing-starter/` are git-ignored. It holds the Trace Collector System (TCS) reactor plus two independent Maven projects (Spring Boot 4.1.x, Java 25, Jackson 3 under `tools.jackson.*`):
 
-- `pom.xml` + `tc-*/` — the TCS reactor (`ru.aasmc:trace-collector`), the backend that consumes the `otlp-traces` topic. Design: `agent/01…08`; implementation plan and progress: `agent/09-implementation-plan.md` (Phase 0 and step 1a done; results in §1.6 and §2.6). The two projects below are **not** reactor modules.
+- `pom.xml` + `tc-*/` — the TCS reactor (`ru.aasmc:trace-collector`), the backend that consumes the `otlp-traces` topic. Design: `agent/01…08`; implementation plan and progress: `agent/09-implementation-plan.md` (Phase 0 and steps 1a, 1b done; results in §1.6, §2.6). The two projects below are **not** reactor modules.
 
 - `otlp-kafka-export-tracing-starter/` — a Spring Boot starter library that replaces the standard OTLP HTTP/gRPC trace export with export of spans to Kafka as JSON.
 - `opentelemetry-demo/` — a minimal web app that consumes the starter (as `ru.aasmc:otlp-kafka-export-tracing-starter:0.0.1-SNAPSHOT` from the local Maven repo), plus `docker-compose.yml` for a single-node KRaft Kafka on `localhost:9092`.
@@ -22,6 +22,8 @@ mvn verify -pl tc-test-infra -Dit.test=WireMockIT      # single integration test
 ```
 
 TCS testing rules (09 §0.3): `tc-domain` tests are plain JUnit (`*Test`, no Spring); every other test is a full-context `@SpringBootTest` named `*IT`, using the module's variant of `@TcIntegrationTest` from `tc-test-infra` (`ru.aasmc.tracing.testinfra`); no `@MockitoBean`; PostgreSQL/Kafka only via Testcontainers, external HTTP only via WireMock. Compiler runs with `-Werror`.
+
+Code rules: write only what a current test or caller needs (KISS, DRY, YAGNI). Javadoc must be self-contained — never cite ADRs, design-doc sections, use cases or plan items; keep test ids out of `@DisplayName`.
 
 Only `opentelemetry-demo` has a Maven wrapper; the starter is built with a system `mvn` (or `../opentelemetry-demo/mvnw -f pom.xml`).
 

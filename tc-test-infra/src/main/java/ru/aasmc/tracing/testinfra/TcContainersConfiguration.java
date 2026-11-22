@@ -11,7 +11,7 @@ import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * Connects the application context to the JVM-wide containers of {@link TcContainers} (09 §0.3 T2, T3, T7).
+ * Connects the application context to the JVM-wide containers of {@link TcContainers}.
  *
  * <p>The PostgreSQL and Kafka service connections are registered only when the module has the matching Spring Boot
  * module on its classpath ({@code spring-boot-jdbc}, {@code spring-boot-kafka}); otherwise {@code @ServiceConnection}

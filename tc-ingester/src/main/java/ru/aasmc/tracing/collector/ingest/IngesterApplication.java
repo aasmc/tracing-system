@@ -3,7 +3,7 @@ package ru.aasmc.tracing.collector.ingest;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-/** Entry point of {@code tc-ingester} (Consumes otlp-traces and writes traces to PostgreSQL (03 §2)). */
+/** Entry point of {@code tc-ingester} (consumes otlp-traces and writes traces to PostgreSQL). */
 @SpringBootApplication
 public class IngesterApplication {
 

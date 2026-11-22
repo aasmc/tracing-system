@@ -13,11 +13,9 @@ import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Creates the partitions a test needs (09 §0.3 T10). Partitions use the production naming convention and bounds of
- * 04 §8.1 and the CREATE + ATTACH pattern of 04 §8.2, and are owned by {@code tc_owner}.
- *
- * <p>Phase-0 fallback: the SQL is built here. From Phase 2 on this class delegates to the production
- * {@code PartitionDdl} (09 item 2d), so tests and production share one implementation.
+ * Creates the partitions a test needs, named and bounded like production partitions (e.g. {@code span_p2026112109}
+ * for one UTC hour), created standalone and then attached, and owned by {@code tc_owner}. Once production code
+ * creates partitions, this class should delegate to it so both share one implementation.
  */
 public final class TestPartitions {
 

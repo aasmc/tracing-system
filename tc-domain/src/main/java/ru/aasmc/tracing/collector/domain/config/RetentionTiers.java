@@ -3,57 +3,33 @@ package ru.aasmc.tracing.collector.domain.config;
 import java.time.Duration;
 
 /**
- * Two-tier retention (05 §4.12, ADR-13, 03 §5.9 R1–R3, O5): the FULL tier is kept {@code fullDays} (n); the DIGEST
- * tier {@code digestDays} (m) after it, so a digest day is dropped when older than n + m days.
+ * How long trace data is kept. Full data (every span) is kept {@code fullDataDays}; after that each trace is reduced to a
+ * small digest (outcome, business operation, chosen attributes) that is kept {@code digestDays} more.
  *
- * <p>Invariants: {@code fullDays >= MIN_FULL_DAYS} ({@code FULL_DAYS_TOO_SMALL}); {@code digestDays >= 0} ({@code
- * INVALID_DIGEST_DAYS}; 0 disables the digest tier).
+ * <p>Rules: {@code fullDataDays >= }{@value #MIN_FULL_DATA_DAYS} ({@code FULL_DATA_DAYS_TOO_SMALL}), so yesterday's data is never
+ * deleted before it is digested; {@code digestDays >= 0}, where 0 means no digest ({@code INVALID_DIGEST_DAYS}).
  *
- * @param fullDays n
- * @param digestDays m
+ * @param fullDataDays days of full data
+ * @param digestDays days of digest after the full data is gone
  */
-public record RetentionTiers(int fullDays, int digestDays) {
+public record RetentionTiers(int fullDataDays, int digestDays) {
 
-    /** Compaction needs one whole closed day plus slack. */
-    public static final int MIN_FULL_DAYS = 2;
-
-    /** Seed defaults (changelog 005). */
+    public static final int MIN_FULL_DATA_DAYS = 2;
     public static final RetentionTiers DEFAULT = new RetentionTiers(7, 90);
 
     /**
-     * R2: {@code fullDays} must exceed the largest merge window rounded up to whole days.
+     * Traces of one business operation are linked while their data is still there, so full data must outlive the
+     * longest merge window by at least a day.
      *
-     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code FULL_DAYS_BELOW_MERGE_WINDOW}
+     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code FULL_DATA_DAYS_BELOW_MERGE_WINDOW} unless
+     *     {@code mergeWindow <= fullDataDays - 1 day}
      */
-    public void requireLongerThan(Duration maxMergeWindow) {
+    public void requireFullDataOutlives(Duration mergeWindow) {
         throw new UnsupportedOperationException();
     }
 
-    /**
-     * O5: a merge window may be at most {@code fullDays - 1 day}.
-     *
-     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_MERGE_WINDOW}
-     */
-    public void requireMergeWindowFits(Duration mergeWindow) {
-        throw new UnsupportedOperationException();
-    }
-
-    public boolean digestEnabled() {
-        throw new UnsupportedOperationException();
-    }
-
-    /** n days. */
-    public Duration fullRetention() {
-        throw new UnsupportedOperationException();
-    }
-
-    /** n + m days: the value stored in the DIGEST rows of {@code retention_policy}. */
-    public Duration digestDropAge() {
-        throw new UnsupportedOperationException();
-    }
-
-    /** The retention every row of {@code tier} must have. */
-    public Duration retentionOf(RetentionTier tier) {
+    /** {@code fullDataDays} as a duration. */
+    public Duration fullDataRetention() {
         throw new UnsupportedOperationException();
     }
 }

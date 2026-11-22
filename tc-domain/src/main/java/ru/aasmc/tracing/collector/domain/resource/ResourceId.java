@@ -1,8 +1,8 @@
 package ru.aasmc.tracing.collector.domain.resource;
 
 /**
- * Content-hash identity of a {@link Resource}: xxHash64 of its canonical encoding ({@link ResourceHasher}, 05 §3.5).
+ * Content id of a resource, computed by {@link ResourceHasher}.
  *
- * @param value the hash as a signed long ({@code resource.id bigint})
+ * @param value the 64-bit hash
  */
 public record ResourceId(long value) {}

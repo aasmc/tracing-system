@@ -1,12 +1,9 @@
 package ru.aasmc.tracing.collector.domain;
 
 /**
- * One broken domain rule: a {@link ViolationCode} plus a human-readable message (09 §2.1 item 1a-10).
+ * A broken business rule: a machine-readable code plus a message for humans.
  *
- * <p>Invariants: {@code code} is not null; {@code message} is not blank. Messages never contain attribute values
- * or payload fragments, because they reach logs and API responses (05 §7.3).
- *
- * @param code the machine-readable code
- * @param message the explanation for humans
+ * @param code what kind of rule was broken
+ * @param message which value broke it and why
  */
 public record DomainViolation(ViolationCode code, String message) {}

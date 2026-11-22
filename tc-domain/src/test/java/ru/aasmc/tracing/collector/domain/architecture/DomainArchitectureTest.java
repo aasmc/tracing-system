@@ -9,7 +9,7 @@ import com.tngtech.archunit.lang.ArchRule;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-/** 0-T5 / T12: {@code tc-domain} stays framework-free. Plain JUnit: ArchUnit analyses bytecode, no context needed. */
+/** {@code tc-domain} stays framework-free. Plain JUnit: ArchUnit analyses bytecode, no context needed. */
 class DomainArchitectureTest {
 
     private static final JavaClasses DOMAIN = new ClassFileImporter()
@@ -17,7 +17,7 @@ class DomainArchitectureTest {
             .importPackages("ru.aasmc.tracing.collector.domain");
 
     @Test
-    @DisplayName("0-T5 domain main code has no Spring, JDBC, Kafka or Jackson dependency")
+    @DisplayName("domain main code has no Spring, JDBC, Kafka or Jackson dependency")
     void given_domainMainCode_when_analysed_then_noFrameworkDependencies() {
         ArchRule rule = noClasses()
                 .that()

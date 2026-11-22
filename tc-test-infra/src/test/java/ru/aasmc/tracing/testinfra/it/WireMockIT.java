@@ -41,7 +41,7 @@ class WireMockIT {
     String vaultUriProperty;
 
     @Test
-    @DisplayName("0-T3 the OIDC discovery document and the JWKS are served and registered as properties")
+    @DisplayName("the OIDC discovery document and the JWKS are served and registered as properties")
     void given_issuer_when_fetchingDiscoveryAndJwks_then_served() throws Exception {
         HttpResponse<String> discovery = get(issuer.issuerUri() + "/.well-known/openid-configuration");
         HttpResponse<String> jwks = get(issuer.jwkSetUri());
@@ -54,7 +54,7 @@ class WireMockIT {
     }
 
     @Test
-    @DisplayName("0-T3 a JWT minted by TestJwtIssuer validates with Spring's Nimbus decoder built from the issuer")
+    @DisplayName("a JWT minted by TestJwtIssuer validates with Spring's Nimbus decoder built from the issuer")
     void given_mintedToken_when_decodedViaIssuerLocation_then_validWithRolesAndScopes() {
         JwtDecoder decoder = JwtDecoders.fromIssuerLocation(issuer.issuerUri());
 
@@ -66,7 +66,7 @@ class WireMockIT {
     }
 
     @Test
-    @DisplayName("0-T3 expired, wrong-issuer and unknown-key tokens are rejected")
+    @DisplayName("expired, wrong-issuer and unknown-key tokens are rejected")
     void given_invalidTokens_when_decoded_then_rejected() {
         JwtDecoder decoder = JwtDecoders.fromIssuerLocation(issuer.issuerUri());
 
@@ -83,7 +83,7 @@ class WireMockIT {
     }
 
     @Test
-    @DisplayName("0-T3 Vault KV v2 stubs answer 200 with the KV v2 envelope, 403 and 404")
+    @DisplayName("Vault KV v2 stubs answer 200 with the KV v2 envelope, 403 and 404")
     void given_vaultStubs_when_reading_then_kvV2Responses() throws Exception {
         String ok = TestIds.name("kafka/sms-cluster");
         String denied = TestIds.name("kafka/denied");

@@ -3,7 +3,7 @@ package ru.aasmc.tracing.collector.admin;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-/** Entry point of {@code tc-control-plane} (Administration API for sources, correlation, indexing, retention (03 §5)). */
+/** Entry point of {@code tc-control-plane} (administration API for enrichment sources, correlation types, indexed attributes and retention). */
 @SpringBootApplication
 public class ControlPlaneApplication {
 

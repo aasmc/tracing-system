@@ -1,253 +1,40 @@
 package ru.aasmc.tracing.collector.domain.enrichment;
 
-import com.google.re2j.Pattern;
-import java.util.Optional;
-
 /**
- * Value transform of a field mapping (05 §4.7.1, 03 §5.4 V9). Every transform except {@link None} works on strings
- * and yields a STRING.
- *
- * <p>Persisted as the pair {@code (transform, transformArg)}; {@link #of(String, String)} and {@link #code()} /
- * {@link #argument()} convert both ways.
+ * Changes a mapped string value before it is stored. Every transform except {@link None} works on strings only.
+ * Arguments are checked when the transform is created ({@code INVALID_TRANSFORM}).
  */
 public sealed interface Transform {
 
-    /** Persisted name: NONE, LOWERCASE, UPPERCASE, TRIM, SHA256, MASK, REGEX_EXTRACT. */
-    String code();
+    record None() implements Transform {}
 
-    /** Persisted argument, or {@code null}. */
-    String argument();
+    record Lowercase() implements Transform {}
 
-    /** {@code false} only for {@link None}. */
-    boolean stringOnly();
+    record Uppercase() implements Transform {}
 
-    /** Applies the transform; empty when it yields no value (only {@link RegexExtract} without a match). */
-    Optional<String> apply(String value);
+    record Trim() implements Transform {}
+
+    /** Replaces the value with its SHA-256 as lowercase hex, so it can still be searched for by equality. */
+    record Sha256() implements Transform {}
 
     /**
-     * Builds a transform from its persisted pair; a {@code null} name is NONE.
+     * Replaces all but the last {@code keepLastChars} characters with {@code *}.
      *
-     * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_TRANSFORM} for an unknown
-     *     name or a bad argument
+     * @param keepLastChars 0..{@value #MAX_KEEP_LAST_CHARS}
      */
-    static Transform of(String name, String argument) {
-        throw new UnsupportedOperationException();
-    }
+    record Mask(int keepLastChars) implements Transform {
 
-    /** Identity. */
-    record None() implements Transform {
-
-        @Override
-        public String code() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public String argument() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean stringOnly() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Optional<String> apply(String value) {
-            throw new UnsupportedOperationException();
-        }
-    }
-
-    /** {@link String#toLowerCase(java.util.Locale)} with {@code Locale.ROOT}. */
-    record Lowercase() implements Transform {
-
-        @Override
-        public String code() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public String argument() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean stringOnly() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Optional<String> apply(String value) {
-            throw new UnsupportedOperationException();
-        }
-    }
-
-    /** {@link String#toUpperCase(java.util.Locale)} with {@code Locale.ROOT}. */
-    record Uppercase() implements Transform {
-
-        @Override
-        public String code() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public String argument() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean stringOnly() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Optional<String> apply(String value) {
-            throw new UnsupportedOperationException();
-        }
-    }
-
-    /** {@link String#strip()}. */
-    record Trim() implements Transform {
-
-        @Override
-        public String code() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public String argument() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean stringOnly() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Optional<String> apply(String value) {
-            throw new UnsupportedOperationException();
-        }
-    }
-
-    /** Lowercase hex SHA-256 of the UTF-8 value: PII that must stay joinable but not readable. */
-    record Sha256() implements Transform {
-
-        @Override
-        public String code() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public String argument() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean stringOnly() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Optional<String> apply(String value) {
-            throw new UnsupportedOperationException();
-        }
+        public static final int MAX_KEEP_LAST_CHARS = 16;
     }
 
     /**
-     * Keeps the last {@code keepLast} code points and replaces the others with {@code *}. Invariant: {@code 0 <=
-     * keepLast <= 16} (V9; deviation from 05, which said 0..8); default 2.
+     * Keeps the first capturing group of a regular expression. The expression uses RE2 syntax, whose matching time
+     * is linear in the input, so a client-supplied pattern cannot stall the enricher.
      *
-     * @param keepLast code points kept at the end
+     * @param regex a valid RE2 expression with at least one group, at most {@value #MAX_REGEX_LENGTH} characters
      */
-    record Mask(int keepLast) implements Transform {
-
-        public static final int DEFAULT_KEEP_LAST = 2;
-        public static final int MAX_KEEP_LAST = 16;
-
-        @Override
-        public String code() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public String argument() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean stringOnly() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Optional<String> apply(String value) {
-            throw new UnsupportedOperationException();
-        }
-    }
-
-    /**
-     * Extracts the single capturing group of an RE2/J regular expression (linear time, no catastrophic
-     * backtracking). No match yields no value. Invariants (V9): at most {@link #MAX_REGEX_LENGTH} characters, compiles
-     * with RE2/J, exactly one capturing group. Equality is by regex text.
-     */
-    final class RegexExtract implements Transform {
+    record RegexExtract(String regex) implements Transform {
 
         public static final int MAX_REGEX_LENGTH = 256;
-
-        private final String regex;
-        private final Pattern pattern;
-
-        /**
-         * @throws ru.aasmc.tracing.collector.domain.DomainViolationException {@code INVALID_TRANSFORM}
-         */
-        public RegexExtract(String regex) {
-            this.regex = regex;
-            this.pattern = null;
-            throw new UnsupportedOperationException();
-        }
-
-        public String regex() {
-            return regex;
-        }
-
-        Pattern pattern() {
-            return pattern;
-        }
-
-        @Override
-        public String code() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public String argument() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean stringOnly() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Optional<String> apply(String value) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public int hashCode() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public String toString() {
-            throw new UnsupportedOperationException();
-        }
     }
 }

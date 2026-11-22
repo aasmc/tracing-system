@@ -22,7 +22,7 @@ class TcContainersIT {
     JdbcTemplate jdbc;
 
     @Test
-    @DisplayName("0-T1 the context's DataSource is connected to the PostgreSQL 18 container via @ServiceConnection")
+    @DisplayName("the context's DataSource is connected to the PostgreSQL 18 container via @ServiceConnection")
     void given_context_when_queryingServerVersion_then_postgres18() throws Exception {
         try (var connection = dataSource.getConnection()) {
             assertThat(connection.getMetaData().getURL())
@@ -34,7 +34,7 @@ class TcContainersIT {
     }
 
     @Test
-    @DisplayName("0-T1 uuidv7() exists and returns version-7 UUIDs")
+    @DisplayName("uuidv7() exists and returns version-7 UUIDs")
     void given_postgres18_when_callingUuidv7_then_version7() {
         UUID id = jdbc.queryForObject("SELECT uuidv7()", UUID.class);
 
@@ -43,7 +43,7 @@ class TcContainersIT {
     }
 
     @Test
-    @DisplayName("0-T1 schema tc and the Liquibase tracking tables exist and are owned by tc_owner")
+    @DisplayName("schema tc and the Liquibase tracking tables exist and are owned by tc_owner")
     void given_liquibaseMigrations_when_inspectingCatalog_then_trackingTablesOwnedByTcOwner() {
         JdbcProbe probe = JdbcProbe.superuser();
 
@@ -57,7 +57,7 @@ class TcContainersIT {
     }
 
     @Test
-    @DisplayName("0-T1 the infrastructure roles exist; tc_migrator and tc_maintenance are members of tc_owner")
+    @DisplayName("the infrastructure roles exist; tc_migrator and tc_maintenance are members of tc_owner")
     void given_iacBootstrap_when_inspectingRoles_then_rolesAsIn04Section13() {
         JdbcProbe probe = JdbcProbe.superuser();
 

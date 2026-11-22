@@ -38,7 +38,7 @@ class KafkaContainersIT {
     String foreignBootstrapServers;
 
     @Test
-    @DisplayName("0-T2 both clusters are reachable and distinct; the context points at the TCS cluster")
+    @DisplayName("both clusters are reachable and distinct; the context points at the TCS cluster")
     void given_twoClusters_when_describing_then_reachableAndDistinct() throws Exception {
         String tcsClusterId = clusterId(TcContainers.kafka().getBootstrapServers());
         String foreignClusterId = clusterId(TcContainers.foreignKafka().getBootstrapServers());
@@ -52,7 +52,7 @@ class KafkaContainersIT {
     }
 
     @Test
-    @DisplayName("0-T2 topic auto-creation is disabled: producing to an unknown topic fails and creates nothing")
+    @DisplayName("topic auto-creation is disabled: producing to an unknown topic fails and creates nothing")
     void given_autoCreateDisabled_when_producingToUnknownTopic_then_failsAndNoTopic() {
         String unknown = TestIds.topic("unknown");
         KafkaProbe probe = KafkaProbe.tcs();
@@ -69,7 +69,7 @@ class KafkaContainersIT {
     }
 
     @Test
-    @DisplayName("0-T2 KafkaTopicsFixture creates the standard topics and per-test topics; KafkaProbe round-trips")
+    @DisplayName("KafkaTopicsFixture creates the standard topics and per-test topics; KafkaProbe round-trips")
     void given_fixture_when_creatingTopics_then_topicsExistAndRecordsRoundTrip() {
         KafkaTopicsFixture.tcs().createStandardTopics().createStandardTopics(); // idempotent
         String enrichmentTopic = TestIds.topic("sms-gateway.delivery-reports");

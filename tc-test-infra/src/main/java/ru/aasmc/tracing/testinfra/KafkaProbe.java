@@ -29,7 +29,7 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 
 /**
- * Test-side Kafka client (09 §1.3): sends raw bytes with headers, reads a topic from the beginning, and inspects
+ * Test-side Kafka client: sends raw bytes with headers, reads a topic from the beginning, and inspects
  * consumer groups and committed offsets. It never creates topics; use {@link KafkaTopicsFixture}.
  */
 public final class KafkaProbe {

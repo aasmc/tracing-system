@@ -1,24 +1,21 @@
 package ru.aasmc.tracing.collector.domain.attribute;
 
 /**
- * How a retained value is written into {@code trace_digest.attributes} (05 §4.9, ADR-13); stored in
- * {@code indexed_attribute.digest_transform}. {@code tc-query-api} applies the same function to search values of
- * digest-tier queries.
+ * How an attribute value is written into the long-term digest of a trace, which outlives the full trace data.
+ * Personal data must not be kept there in clear text.
  */
 public enum DigestTransform {
-    /** As is. */
+    /** Keep the value as it is. */
     NONE,
-    /** {@link DigestValueHasher#sha256Hex(String)}: joinable and searchable by equality, not readable. */
+    /**
+     * SHA-256 of the UTF-8 bytes as 64 lowercase hex characters. Equality search still works: the search value is
+     * hashed the same way, in Java or in PostgreSQL.
+     */
     SHA256,
-    /** {@link DigestValueHasher#mask(String)}: recognisable prefix only, not searchable. */
+    /** Keep the first two characters and append {@code ***}, e.g. {@code u-42} → {@code u-***}. */
     MASK;
 
     public String apply(String value) {
-        throw new UnsupportedOperationException();
-    }
-
-    /** EQ/IN in the digest tier work for NONE and SHA256 (hash the query value); MASK destroys the value. */
-    public boolean searchableByEquality() {
         throw new UnsupportedOperationException();
     }
 }

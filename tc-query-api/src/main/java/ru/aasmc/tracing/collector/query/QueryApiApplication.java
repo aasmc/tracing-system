@@ -3,7 +3,7 @@ package ru.aasmc.tracing.collector.query;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-/** Entry point of {@code tc-query-api} (Read-only search and trace API (03 §4)). */
+/** Entry point of {@code tc-query-api} (read-only search and trace API). */
 @SpringBootApplication
 public class QueryApiApplication {
 

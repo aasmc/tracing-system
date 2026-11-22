@@ -5,7 +5,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Unique identifiers per test (09 §0.3 T8: isolation through unique data, not cleanup). Names carry a JVM-wide
+ * Unique identifiers per test: tests are isolated by unique data instead of cleanup. Names carry a JVM-wide
  * sequence number plus a random suffix, so they are unique across tests, forks and reused containers.
  */
 public final class TestIds {
