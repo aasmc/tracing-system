@@ -11,22 +11,25 @@ public final class DomainViolationException extends IllegalArgumentException {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    private final transient DomainViolation violation;
+    private final ViolationCode code;
 
     public DomainViolationException(DomainViolation violation) {
-        super(violation.code() + ": " + violation.message());
-        this.violation = violation;
+        this(violation.code(), violation.message());
     }
 
     public DomainViolationException(ViolationCode code, String message) {
-        this(new DomainViolation(code, message));
+        super(code + ": " + message);
+        this.code = code;
     }
 
-    public DomainViolation violation() {
-        return violation;
+    /** Throws a violation with {@code code} and {@code message} unless {@code condition} holds. */
+    public static void require(boolean condition, ViolationCode code, String message) {
+        if (!condition) {
+            throw new DomainViolationException(code, message);
+        }
     }
 
     public ViolationCode code() {
-        return violation.code();
+        return code;
     }
 }

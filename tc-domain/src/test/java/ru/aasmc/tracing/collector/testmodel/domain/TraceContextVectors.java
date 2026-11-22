@@ -48,6 +48,10 @@ public final class TraceContextVectors {
                 invalid("flags too short", "00-" + TRACE + "-" + SPAN + "-1"),
                 invalid("non-hex character", "00-g" + TRACE.substring(1) + "-" + SPAN + "-01"),
                 invalid("wrong separator", "00_" + TRACE + "_" + SPAN + "_01"),
+                invalid("missing separator after the trace id", "00-" + TRACE + "x" + SPAN + "-01"),
+                invalid("missing separator after the parent id", "00-" + TRACE + "-" + SPAN + "x01"),
+                invalid("non-hex version", "0g-" + TRACE + "-" + SPAN + "-01"),
+                invalid("non-hex flags", "00-" + TRACE + "-" + SPAN + "-0g"),
                 invalid("empty", ""),
                 invalid("null", null));
     }

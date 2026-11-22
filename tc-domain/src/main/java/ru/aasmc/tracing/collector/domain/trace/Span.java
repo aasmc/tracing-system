@@ -1,7 +1,12 @@
 package ru.aasmc.tracing.collector.domain.trace;
 
+import static ru.aasmc.tracing.collector.domain.DomainViolationException.require;
+
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
+import ru.aasmc.tracing.collector.domain.ViolationCode;
 import ru.aasmc.tracing.collector.domain.attribute.Attributes;
 import ru.aasmc.tracing.collector.domain.resource.InstrumentationScopeId;
 import ru.aasmc.tracing.collector.domain.resource.ResourceId;
@@ -53,11 +58,26 @@ public record Span(
         DroppedCounts droppedByProducer,
         Set<SpanFlag> collectorFlags) {
 
+    public Span {
+        require(traceId != null && spanId != null, ViolationCode.INVALID_SPAN, "span without trace id or span id");
+        require(!spanId.equals(parentSpanId), ViolationCode.INVALID_SPAN, "span " + spanId + " is its own parent");
+        require(durationNanos >= 0, ViolationCode.INVALID_SPAN, "negative duration of span " + spanId);
+        name = name == null ? "" : name;
+        events = List.copyOf(events);
+        links = List.copyOf(links);
+        EnumSet<SpanFlag> flags = EnumSet.noneOf(SpanFlag.class);
+        flags.addAll(collectorFlags);
+        if (attributes.anyValueTruncated()) {
+            flags.add(SpanFlag.ATTRIBUTE_TRUNCATED);
+        }
+        collectorFlags = Collections.unmodifiableSet(flags);
+    }
+
     public boolean isRoot() {
-        throw new UnsupportedOperationException();
+        return parentSpanId == null;
     }
 
     public long endEpochNanos() {
-        throw new UnsupportedOperationException();
+        return startEpochNanos + durationNanos;
     }
 }

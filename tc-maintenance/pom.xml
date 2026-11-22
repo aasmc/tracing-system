@@ -10,7 +10,7 @@
 
     <artifactId>tc-maintenance</artifactId>
     <name>tc-maintenance</name>
-    <description>Partitions, retention, correlation resolver, digest compaction (03 §6)</description>
+    <description>Partitions, retention, correlation resolver, digest compaction</description>
 
     <dependencies>
         <dependency>
@@ -29,7 +29,7 @@
             <groupId>net.javacrumbs.shedlock</groupId>
             <artifactId>shedlock-provider-jdbc-template</artifactId>
         </dependency>
-        <!-- tests: full-context integration tests only (09 §0.3) -->
+        <!-- tests: full-context integration tests only -->
         <dependency>
             <groupId>ru.aasmc</groupId>
             <artifactId>tc-test-infra</artifactId>

@@ -1,12 +1,15 @@
 package ru.aasmc.tracing.collector.domain.correlation;
 
+import static ru.aasmc.tracing.collector.domain.DomainViolationException.require;
+
+import ru.aasmc.tracing.collector.domain.ViolationCode;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
 
 /**
  * An attribute whose value links traces into one business operation.
  *
- * <p>Key and role are set; {@code stepLabel} is {@code null} or 1..{@value #MAX_STEP_LABEL} characters
- * ({@code INVALID_CORRELATION_TYPE}).
+ * <p>Key and role are set; {@code stepLabel} is {@code null} or not blank ({@code INVALID_OPERATION_DEFINITION}); its
+ * maximum length is configured in {@link CorrelationLimits}.
  *
  * @param id key id
  * @param key the attribute
@@ -16,5 +19,14 @@ import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
  */
 public record CorrelationKey(int id, AttributeKey key, KeyRole role, String stepLabel) {
 
-    public static final int MAX_STEP_LABEL = 64;
+    public CorrelationKey {
+        require(
+                key != null && role != null,
+                ViolationCode.INVALID_OPERATION_DEFINITION,
+                "key without attribute or role");
+        require(
+                stepLabel == null || !stepLabel.isBlank(),
+                ViolationCode.INVALID_OPERATION_DEFINITION,
+                "blank step label");
+    }
 }

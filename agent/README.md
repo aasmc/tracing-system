@@ -39,7 +39,7 @@ This is the design produced for the assignment in [trace-collector-design-prompt
   - Enrichment sources are data, not code: a Kafka connection, a topic, a trace-context extraction strategy (default W3C `traceparent` header) and JSON Pointer field mappings.
   - `tc-enricher` starts and stops listener containers at runtime.
   - Enrichments are append-only additions joined at read time, so they may arrive before or after the spans.
-- **Linking traces.** Correlation types declare a PRIMARY key and ALIAS keys (e.g. `idp.auth_session_id` and `oauth.authorization_code`). An asynchronous union-find resolver merges traces into a `business_operation`. Native OTel span links are indexed in both directions.
+- **Linking traces.** Business operation definitions declare a PRIMARY key and ALIAS keys (e.g. `idp.auth_session_id` and `oauth.authorization_code`). An asynchronous union-find resolver merges traces into a `business_operation`. Native OTel span links are indexed in both directions.
 - **Services.** `tc-ingester`, `tc-enricher`, `tc-query-api`, `tc-control-plane`, `tc-maintenance`, `tc-schema-migrator` (Java 25, Spring Boot 4.1.3), plus `tc-ui` (React 19 + TypeScript).
 
 ## Baseline capacity (profile M, sampling 1.0) — see 04 §9

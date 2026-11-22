@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.UUID;
 import ru.aasmc.tracing.collector.domain.correlation.BusinessOperation;
 
-/** Builds business operations. Defaults: type 1, display value {@code value-1}, one trace, seen once, not merged. */
+/** Builds business operations. Defaults: business operation definition 1, display value {@code value-1}, one trace, seen once, not merged. */
 public final class BusinessOperationBuilder {
 
     private UUID id =

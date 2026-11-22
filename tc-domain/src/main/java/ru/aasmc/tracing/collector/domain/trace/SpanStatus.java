@@ -11,6 +11,6 @@ public record SpanStatus(StatusCode code, String message) {
     public static final SpanStatus UNSET = new SpanStatus(StatusCode.UNSET, null);
 
     public boolean isError() {
-        throw new UnsupportedOperationException();
+        return code == StatusCode.ERROR;
     }
 }

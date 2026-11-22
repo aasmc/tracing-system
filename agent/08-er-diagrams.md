@@ -34,7 +34,7 @@ erDiagram
     enrichment_source ||--|{ enrichment_source_revision : "source_id"
     enrichment_source |o--o| enrichment_source_revision : "current revision (id, current_revision)"
     attribute_key ||--o| indexed_attribute : "key_id"
-    correlation_type ||--|{ correlation_key : "correlation_type_id"
+    business_operation_definition ||--|{ correlation_key : "operation_definition_id"
     attribute_key ||--o{ correlation_key : "key_id"
     service |o..o{ compaction_exclusion : "service_name (by name)"
 
@@ -86,7 +86,7 @@ erDiagram
         text created_by
         timestamptz created_at
     }
-    correlation_type {
+    business_operation_definition {
         int id PK "identity"
         text name UK "e.g. idp.login"
         text description
@@ -108,7 +108,7 @@ erDiagram
     }
     correlation_key {
         int id PK "identity"
-        int correlation_type_id FK
+        int operation_definition_id FK
         int key_id FK
         text role "PRIMARY|ALIAS"
         text step_label "nullable"
@@ -125,7 +125,7 @@ erDiagram
   - A new key starts in `BACKFILLING`. `backfill_cursor` stores the last hour that AttributeBackfill processed, so a new `tc-maintenance` leader can resume. When backfill finishes, the status becomes `ACTIVE` (UC-07).
   - Built-in keys are `service.name`, `span.name` and `status`.
   - ADR-13: `retain_in_digest` marks a key whose values are copied into `trace_digest.attributes` when the trace is compacted, after `digest_transform` (`NONE`, `SHA256` = hex SHA-256, `MASK` = first 2 characters + `***`). A retained key must be indexed. Setting the flag on a non-indexed key makes the control plane create the registry entry in `BACKFILLING`. Flagging is not retroactive for days that are already compacted.
-- **`correlation_type` / `correlation_key`**: the definition of a business operation (UC-08). The keys of a type are its `PRIMARY` and `ALIAS` attribute keys, and `step_label` names the step in the timeline.
+- **`business_operation_definition` / `correlation_key`**: the definition of a business operation (UC-08). The keys of a type are its `PRIMARY` and `ALIAS` attribute keys, and `step_label` names the step in the timeline.
   - ADR-13: `outcome_rule` (nullable jsonb) defines how the outcome of a business operation is derived at compaction: `outcomeKey` value → `successValues` / `failureValues`, otherwise any error → FAILED, otherwise `finalStepLabel` reached → SUCCESS or INCOMPLETE, otherwise SUCCESS (doc 04 §6.8). An `outcomeKey` is automatically flagged `retain_in_digest` with transform `NONE`.
 - **`compaction_exclusion`** (ADR-13): traces whose root span name matches `root_name_pattern` (SQL `LIKE`), optionally restricted to a root service, are not digested unless they belong to a business operation. It is seeded with `GET /actuator/%` and managed via `/api/v1/admin/compaction-exclusions`. The service is matched **by name**, so this is a logical relationship and no FK.
 
@@ -137,8 +137,8 @@ erDiagram
   - The composite FK `(id, current_revision)` → `(source_id, revision)` makes sure the current revision belongs to the same source.
   - The FK is `DEFERRABLE INITIALLY DEFERRED`, so a new revision and the pointer to it can be written in one transaction in either order.
 - `attribute_key` 1 — 0..1 `indexed_attribute`. The registry entry shares the key's id as its PK.
-- `correlation_type` 1 — 1..n `correlation_key`, with `UNIQUE (correlation_type_id, key_id)`.
-- `attribute_key` 1 — 0..n `correlation_key`. One key may serve several correlation types.
+- `business_operation_definition` 1 — 1..n `correlation_key`, with `UNIQUE (operation_definition_id, key_id)`.
+- `attribute_key` 1 — 0..n `correlation_key`. One key may serve several business operation definitions.
 - `service` 0..1 — 0..n `compaction_exclusion` (logical, by `service_name`; NULL = any service).
 
 `tc-control-plane` writes every change together with a bump of `config_revision` in the same transaction. That table is shown in §6.
@@ -412,7 +412,7 @@ erDiagram
     trace_correlation {
         bigint id
         timestamptz observed_at
-        int correlation_type_id
+        int operation_definition_id
         text value
         uuid trace_id
     }
@@ -444,22 +444,22 @@ The source and its revisions are enforced (§1). The enrichment *data* is not: `
 
 ```mermaid
 erDiagram
-    correlation_type ||--|{ correlation_key : "correlation_type_id"
+    business_operation_definition ||--|{ correlation_key : "operation_definition_id"
     attribute_key ||--o{ correlation_key : "key_id"
-    correlation_type ||--o{ correlation_value : "correlation_type_id"
-    correlation_type ||..o{ trace_correlation : "correlation_type_id"
+    business_operation_definition ||--o{ correlation_value : "operation_definition_id"
+    business_operation_definition ||..o{ trace_correlation : "operation_definition_id"
     correlation_key ||..o{ trace_correlation : "correlation_key_id"
     trace_summary ||..o{ trace_correlation : "trace_id"
-    trace_correlation }o..o| correlation_value : "(correlation_type_id, value)"
+    trace_correlation }o..o| correlation_value : "(operation_definition_id, value)"
     correlation_value }|..|| business_operation : "operation_id, operation_first_seen"
-    correlation_type ||..o{ business_operation : "correlation_type_id"
+    business_operation_definition ||..o{ business_operation : "operation_definition_id"
     business_operation |o..o{ business_operation : "merged_into -> id"
     trace_summary ||..o| trace_digest : "trace_id, trace_day (compaction)"
     business_operation ||..o| business_operation_digest : "id = operation_id (compaction, survivors only)"
-    correlation_type ||..o{ business_operation_digest : "correlation_type_id"
+    business_operation_definition ||..o{ business_operation_digest : "operation_definition_id"
     business_operation_digest |o..o{ trace_digest : "operation_id = business_operation_id"
 
-    correlation_type {
+    business_operation_definition {
         int id PK
         text name UK
         interval merge_window
@@ -468,7 +468,7 @@ erDiagram
     }
     correlation_key {
         int id PK
-        int correlation_type_id FK
+        int operation_definition_id FK
         int key_id FK
         text role "PRIMARY|ALIAS"
         text step_label
@@ -481,13 +481,13 @@ erDiagram
         bigint id "identity; resolver watermark"
         timestamptz observed_at "partition key DAILY"
         uuid trace_id "-> trace"
-        int correlation_type_id "-> correlation_type"
+        int operation_definition_id "-> business_operation_definition"
         int correlation_key_id "-> correlation_key"
         smallint origin "1 SPAN 2 RESOURCE 3 ENRICHMENT"
         text value "COLLATE C, max 512 B"
     }
     correlation_value {
-        int correlation_type_id PK, FK
+        int operation_definition_id PK, FK
         text value PK "COLLATE C"
         uuid operation_id "-> business_operation.id"
         timestamptz operation_first_seen "-> business_operation.first_seen"
@@ -498,7 +498,7 @@ erDiagram
         timestamptz first_seen PK "partition key MONTHLY; immutable"
         timestamptz last_seen
         uuid merged_into "survivor id after merge"
-        int correlation_type_id "-> correlation_type"
+        int operation_definition_id "-> business_operation_definition"
         int trace_count
         text display_value
     }
@@ -524,7 +524,7 @@ erDiagram
     business_operation_digest {
         uuid operation_id PK "= business_operation.id"
         date op_day PK "partition key DAILY; first_seen UTC date"
-        int correlation_type_id "-> correlation_type"
+        int operation_definition_id "-> business_operation_definition"
         text display_value
         timestamptz first_seen
         timestamptz last_seen
@@ -541,7 +541,7 @@ erDiagram
 
 - **`trace_correlation`**: the append-only input of the resolver.
   - The ingester writes it for spans that carry a correlation key, and the enricher writes it for enrichment values.
-  - Each row says: "trace T carries value V of correlation type C via key K".
+  - Each row says: "trace T carries value V of business operation definition C via key K".
   - Its `id` is used as the resolver watermark. The watermark lags behind by `transaction_timeout` + 30 s, because identity values are not assigned in commit order (doc 04 §6.7).
 - **`correlation_value`**: an unpartitioned map from `(type, value)` to the current operation. It is maintained only by the single-leader CorrelationResolver. Maintenance deletes rows once `operation_first_seen` is older than the `business_operation` retention.
 - **`business_operation`**: one business operation, such as one IdP login made of traces T1 (first factor), T2 (second factor) and T3 (token exchange).
@@ -555,24 +555,24 @@ erDiagram
   - `business_operation_id` is the root survivor of the trace's first-observed operation.
 - **`business_operation_digest`** (DIGEST tier, ADR-13): one row per closed, non-merged business operation, written once its `last_seen` is older than n days and every member trace day is compacted.
   - It is partitioned daily by `op_day`, the UTC date of `first_seen`.
-  - `outcome` follows `correlation_type.outcome_rule`. `steps` is the ordered timeline (step label from `correlation_key`, member trace timing and status). `attributes` is the union of the members' retained attributes.
+  - `outcome` follows `business_operation_definition.outcome_rule`. `steps` is the ordered timeline (step label from `correlation_key`, member trace timing and status). `attributes` is the union of the members' retained attributes.
   - It serves historical business-operation search and the timeline for up to 97 days (UC-14, UC-22).
 
 **Cardinalities**
 
 | Relationship | Kind | Note |
 |---|---|---|
-| `correlation_type` 1 — 1..n `correlation_key` | enforced | |
-| `correlation_type` 1 — 0..n `correlation_value` | enforced | `correlation_value` is unpartitioned and the types are never hard-deleted. |
+| `business_operation_definition` 1 — 1..n `correlation_key` | enforced | |
+| `business_operation_definition` 1 — 0..n `correlation_value` | enforced | `correlation_value` is unpartitioned and the types are never hard-deleted. |
 | trace 1 — 0..n `trace_correlation` | logical | |
-| `trace_correlation` n — 0..1 `correlation_value` | logical | Joined on `(correlation_type_id, value)`. The value becomes 1 once resolved. |
+| `trace_correlation` n — 0..1 `correlation_value` | logical | Joined on `(operation_definition_id, value)`. The value becomes 1 once resolved. |
 | `correlation_value` n — 1 `business_operation` | logical | The reference carries both PK columns `(id, first_seen)`, so a lookup is pruned to one monthly partition. |
 | `business_operation` 0..1 — 0..n `business_operation` | logical | Through `merged_into`. |
 | business operation 1 — n traces | derived | Via `correlation_value` → `trace_correlation.trace_id`. There is no stored link table; the timeline (UC-14) is computed by a join. |
 | `trace_summary` 1 — 0..1 `trace_digest` | logical | Same `(trace_id, trace_day)`. 0 if the trace was excluded; the summary row itself expires after n days. |
 | `business_operation` 1 — 0..1 `business_operation_digest` | logical | Same id. Merged losers are never digested. |
 | `business_operation_digest` 0..1 — 0..n `trace_digest` | logical | Through `trace_digest.business_operation_id`. A trace in several operations points at one of them; `steps` lists it in all of them. |
-| `correlation_type` 1 — 0..n `business_operation_digest` | logical | |
+| `business_operation_definition` 1 — 0..n `business_operation_digest` | logical | |
 
 **Worked example (IdP).**
 1. T1 carries `idp.auth_session_id = as-777`.
@@ -693,9 +693,9 @@ erDiagram
     kafka_connection ||--o{ enrichment_source : ""
     enrichment_source ||--|{ enrichment_source_revision : ""
     attribute_key ||--o| indexed_attribute : ""
-    correlation_type ||--|{ correlation_key : ""
+    business_operation_definition ||--|{ correlation_key : ""
     attribute_key ||--o{ correlation_key : ""
-    correlation_type ||--o{ correlation_value : ""
+    business_operation_definition ||--o{ correlation_value : ""
     service ||--o{ span_name : ""
     service ||--o{ resource : ""
 
@@ -720,7 +720,7 @@ erDiagram
     service |o..o{ compaction_exclusion : "by name"
     trace_summary ||..o| trace_digest : "compaction"
     business_operation ||..o| business_operation_digest : "compaction"
-    correlation_type ||..o{ business_operation_digest : ""
+    business_operation_definition ||..o{ business_operation_digest : ""
     business_operation_digest |o..o{ trace_digest : ""
     compaction_state ||..o{ trace_digest : "trace_day"
 
@@ -754,14 +754,14 @@ In this overview:
 | `business_operation` | yes | `first_seen`, MONTH | `business_operation_p202611` | FULL: whole month older than 7 d **and** every operation compacted (≤ ≈ 40 d) | DETACH CONCURRENTLY + DROP | none |
 | `trace_digest` | yes | `trace_day` (date), DAY, created on demand | `trace_digest_p20261121` | DIGEST: n + m = 97 d (data present from ≈ day n + 1) | DETACH CONCURRENTLY + DROP | none |
 | `business_operation_digest` | yes | `op_day` (date), DAY, created on demand | `business_operation_digest_p20261121` | DIGEST: 97 d | DETACH CONCURRENTLY + DROP | none |
-| `correlation_value` | no | — | — | until its operation is compacted and the `trace_correlation` hold has passed (≈ 10 d) | batched DELETE (daily) | → `correlation_type` |
+| `correlation_value` | no | — | — | until its operation is compacted and the `trace_correlation` hold has passed (≈ 10 d) | batched DELETE (daily) | → `business_operation_definition` |
 | `compaction_state` | no | — | — | n + m days | DELETE (daily) | none |
 | `compaction_exclusion` | no | — | — | kept (admin CRUD) | DELETE by admin | none |
 | `resource` | no | — | — | `last_seen` older than span retention + 1 d | DELETE (DictionaryGc, daily) | → `service` |
 | `instrumentation_scope` | no | — | — | kept (tiny) | — | none |
 | `service`, `span_name`, `attribute_key` | no | — | — | kept forever (bounded by cardinality guards) | — | `span_name` → `service` |
 | `kafka_connection`, `enrichment_source`, `enrichment_source_revision` | no | — | — | kept (sources soft-deleted) | — | yes (§1) |
-| `indexed_attribute`, `correlation_type`, `correlation_key` | no | — | — | kept (status DISABLED) | `correlation_key` DELETE by admin | yes (§1) |
+| `indexed_attribute`, `business_operation_definition`, `correlation_key` | no | — | — | kept (status DISABLED) | `correlation_key` DELETE by admin | yes (§1) |
 | `retention_policy`, `config_revision`, `correlation_resolver_state`, `shedlock` | no | — | — | kept | — | none |
 
 The **effective retentions** above are the defaults n = 7 and m = 90. They change with `PUT /api/v1/admin/retention-policies/tiers`. With `digestDays = 0` the DIGEST tier and the drop gate are disabled.

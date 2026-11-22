@@ -23,7 +23,7 @@ Wherever possible, one running example is used throughout: the **IdP login**.
 | T1 = `4bf92f3577b34da6a3ce929d0e0e4736` | `POST /login/first-factor` at 2026-11-21T09:15:02.114Z. Attributes `user_id=u-42`, `client_id=bookstore-web`, `auth.factor=PASSWORD`, `idp.auth_session_id=as-777` |
 | T2 = `7a3c1e9d2b4f60851c2d3e4f5a6b7c8d` | `POST /login/second-factor` at 09:15:31.502Z. Attributes `auth.factor=SMS`, `idp.auth_session_id=as-777`, `oauth.authorization_code=code-abc` |
 | T3 = `c0ffee00d15ea5e0123456789abcdef0` | `POST /oauth2/token` at 09:15:33.020Z. Attributes `client_id=bookstore-web`, `oauth.authorization_code=code-abc` |
-| Correlation type `idp.login` | PRIMARY key `idp.auth_session_id` (step label `authentication`); ALIAS key `oauth.authorization_code` (step label `token-exchange`) |
+| Business operation definition `idp.login` | PRIMARY key `idp.auth_session_id` (step label `authentication`); ALIAS key `oauth.authorization_code` (step label `token-exchange`) |
 | Enrichment source `sms-gateway.delivery-reports` | Topic `sms-gateway.delivery-reports` in the client cluster `sms-kafka`. Event `{"messageId":"m-1","status":"DELIVERED","provider":"smsc-1","deliveredAt":"2026-11-21T09:15:32.410Z"}` with header `traceparent: 00-7a3c1e9d2b4f60851c2d3e4f5a6b7c8d-5f3a9b2c1d0e4f68-01`, which yields `sms.delivery.status=DELIVERED` and `sms.provider=smsc-1` |
 | Indexed keys | `user_id`, `client_id`, `auth.factor`, `sms.delivery.status`, plus the built-ins `service.name`, `span.name`, `status` |
 | Retention tiers | `fullDays` = 7, `digestDays` = 90. The full tier of 2026-11-21 is compacted on 2026-11-29 (first tick after 00:00Z); its digest partitions are dropped on 2027-02-27 (age > 97 d) |
@@ -38,7 +38,7 @@ Wherever possible, one running example is used throughout: the **IdP login**.
 |---|---|---|---|
 | **Instrumented Microservice** | System (primary for UC-01) | Any Spring Boot 4 service using `otlp-kafka-export-tracing-starter`, e.g. `idp-auth-service`. It produces fragments to `otlp-traces`. | Kafka `otlp-traces` |
 | **Enrichment Producer** | External system | A client system that publishes events carrying trace context to its own topic, e.g. `sms-gateway`. It does not know TCS exists. | Client Kafka topic (e.g. `sms-gateway.delivery-reports`) |
-| **TC Admin** | Human, JWT role `TC_ADMIN` | A platform engineer who configures connections, enrichment sources, indexed attributes (including "retain in digest" and its transform), correlation types (including the outcome rule), retention tiers and compaction exclusions. | `tc-ui` admin screens, then `tc-control-plane` `/api/v1/admin` |
+| **TC Admin** | Human, JWT role `TC_ADMIN` | A platform engineer who configures connections, enrichment sources, indexed attributes (including "retain in digest" and its transform), business operation definitions (including the outcome rule), retention tiers and compaction exclusions. | `tc-ui` admin screens, then `tc-control-plane` `/api/v1/admin` |
 | **Trace Analyst** | Human, JWT role `TC_VIEWER` | A support or SRE engineer who searches traces, opens trace details and views business operations, in the full tier (n days) and in the digest tier (up to n + m days). | `tc-ui`, then `tc-query-api` `/api/v1` |
 | **PII-privileged Analyst** | Human, `TC_VIEWER` plus scope `TC_PII` | Same as Trace Analyst, but sees PERSONAL values unmasked. | same |
 | **Platform Operator (SRE)** | Human | Runs replays, watches lag and DLQs, and handles PostgreSQL incidents. | `kafka-consumer-groups.sh`, kubectl, Grafana dashboards |
@@ -78,7 +78,7 @@ flowchart LR
             UC04["UC-04 Register connection and source"]
             UC05["UC-05 Activate / pause / update / delete source"]
             UC07["UC-07 Define indexed attribute"]
-            UC08["UC-08 Define correlation type"]
+            UC08["UC-08 Define business operation definition"]
             UC23["UC-23 Configure retention tiers, retained keys, outcome rules, exclusions"]
         end
         subgraph COR["Correlation - tc-maintenance"]
@@ -202,7 +202,7 @@ These targets assume capacity profile **M** (1 000 traces/s average, 3 000/s pea
    - for each span attribute and resource attribute whose key is indexed (status BACKFILLING or ACTIVE, origin scope matching), it emits candidate `trace_attribute` rows, deduplicated in memory per (trace, key, value);
    - it adds the built-ins: `service.name` (RESOURCE), the root `span.name` (DERIVED) and `status=ERROR` (DERIVED).
 
-   `CorrelationExtractor` emits candidate `trace_correlation` rows for attributes whose key belongs to an ACTIVE correlation type.
+   `CorrelationExtractor` emits candidate `trace_correlation` rows for attributes whose key belongs to an ACTIVE business operation definition.
 7. `SpanBatchWriter` (`ingest.persist`) opens **one transaction** on the primary and runs these steps:
    1. Inserts new `resource`, `instrumentation_scope`, `service`, `span_name` and `attribute_key` rows (ON CONFLICT DO NOTHING).
    2. Uses the per-connection staging table `span_stage` (`CREATE TEMP TABLE IF NOT EXISTS ... ON COMMIT DELETE ROWS`; the session-mode pool `tc_ingest` keeps it on the connection), then streams all spans of the batch with `CopyManager.copyIn("COPY span_stage FROM STDIN (FORMAT binary)")`. The staging table also has `trace_day` and the batch-local `frag_no`.
@@ -612,7 +612,7 @@ HTTP/1.1 200 OK
 5. `EnrichmentWriter` (`enrich.persist`), in one PG transaction per batch:
    1. `INSERT INTO tc.trace_enrichment (observed_at, trace_id, span_id, source_id, source_revision, key_id, value, kafka_partition, kafka_offset) ... ON CONFLICT (source_id, kafka_partition, kafka_offset, key_id, observed_at) DO NOTHING RETURNING trace_id, key_id, value, observed_at`.
    2. For returned rows whose key is indexed with origin scope ANY or ENRICHMENT (here `sms.delivery.status`): `INSERT INTO tc.trace_attribute (ts = observed_at, key_id, value_str = 'DELIVERED', value_num = NULL, trace_id = T2, origin = 3)`.
-   3. For returned rows whose key is a correlation key: `INSERT INTO tc.trace_correlation (observed_at, correlation_type_id, correlation_key_id, value, trace_id, origin = 3)`. There is none in this example.
+   3. For returned rows whose key is a correlation key: `INSERT INTO tc.trace_correlation (observed_at, operation_definition_id, correlation_key_id, value, trace_id, origin = 3)`. There is none in this example.
    4. `COMMIT`. Then the container commits the offsets in the client cluster.
 6. **Case A, the event arrives before the spans of T2** (e.g. the SMS gateway is faster than the IdP's BatchSpanProcessor). Nothing special happens: the rows are keyed by `trace_id` only. When UC-01 later stores T2's spans and summary, `GET /traces/{T2}` joins `trace_enrichment` by `trace_id` and shows the enrichment. Search on `sms.delivery.status=DELIVERED` finds T2 as soon as its `trace_summary` row exists, because search joins `trace_attribute` to `trace_summary`.
 7. **Case B, the event arrives after the spans.** The enrichment is visible on the next read. Nothing in `span` or `trace_summary` changes.
@@ -716,7 +716,7 @@ POST /api/v1/admin/indexed-attributes
 
 ---
 
-### UC-08 — Define a correlation type
+### UC-08 — Define a business operation definition
 
 | Field | Value |
 |---|---|
@@ -730,7 +730,7 @@ POST /api/v1/admin/indexed-attributes
 1. Admin submits:
 
 ```http
-POST /api/v1/admin/correlation-types
+POST /api/v1/admin/business-operation-definitions
 {
   "name": "idp.login",
   "description": "One end-user login at the IdP: password, second factor, code-to-token exchange",
@@ -745,7 +745,7 @@ POST /api/v1/admin/correlation-types
 
    `outcomeRule` is optional (ADR-13). It decides the outcome stored in `business_operation_digest` when the operation is compacted (UC-21). Full form: `{"outcomeKey":"business.outcome","successValues":["SUCCESS"],"failureValues":["FAILED","DENIED"],"finalStepLabel":"token-exchange"}`; evaluation order in 05 §4.10.1.
 
-2. `tc-control-plane` validates the `CorrelationType` invariants:
+2. `tc-control-plane` validates the `BusinessOperationDefinition` invariants:
    - name pattern;
    - ≥ 1 PRIMARY key;
    - unique keys;
@@ -753,7 +753,7 @@ POST /api/v1/admin/correlation-types
    - outcome rule: `finalStepLabel` is the step label of one of the type's keys; `outcomeKey`, if set, is an indexed key; success and failure values are disjoint.
 
    It also checks the hub-risk heuristic: for each key it queries the read replica for the number of distinct traces per value over the last hour (if the key is indexed) and warns if the p99 exceeds 1 000.
-3. In one transaction it upserts `attribute_key` rows, inserts `correlation_type(status='ACTIVE')` and two `correlation_key` rows, and bumps `config_revision`.
+3. In one transaction it upserts `attribute_key` rows, inserts `business_operation_definition(status='ACTIVE')` and two `correlation_key` rows, and bumps `config_revision`.
 
 ```json
 HTTP/1.1 201 Created
@@ -783,17 +783,17 @@ HTTP/1.1 201 Created
 - **2b. Key already used in this type.** `400 DUPLICATE_KEY`.
 - **2c. `finalStepLabel` matches no key's step label.** `400 UNKNOWN_STEP_LABEL`.
 - **2d. `outcomeKey` is not indexed.** `400 OUTCOME_KEY_NOT_INDEXED`, with the hint to index it first (UC-07). The outcome is read from `trace_attribute` at compaction, never from spans. When the rule is saved, the control plane also flags `outcomeKey` as `retain_in_digest` (transform `NONE`) if it is not retained yet, because operation outcomes are evaluated from `trace_digest.attributes` (04 §6).
-- **2e. Outcome rule changed later** (`PUT /correlation-types/1` with a new `outcomeRule`, UC-23). Applies to operations compacted after the change; existing `business_operation_digest` rows keep their outcome (not retroactive).
+- **2e. Outcome rule changed later** (`PUT /business-operation-definitions/1` with a new `outcomeRule`, UC-23). Applies to operations compacted after the change; existing `business_operation_digest` rows keep their outcome (not retroactive).
 - **Update.**
-  - `PUT /correlation-types/1` can add or remove keys and change step labels and the window.
+  - `PUT /business-operation-definitions/1` can add or remove keys and change step labels and the window.
   - Removing a key stops future observations. Existing operations are not recomputed.
   - Changing roles affects only future resolver decisions.
 - **Disable.** `status = 'DISABLED'` stops extraction and resolution. Existing operations remain readable until retention.
-- **Historical linking.** Observations are extracted only from data ingested after the type exists. There is no automatic backfill. An optional admin action (proposed extension, not yet listed in 03 §5.3) `POST /correlation-types/1/backfill {"window":"P1D"}` scans `span` like UC-07 and appends `trace_correlation` rows.
+- **Historical linking.** Observations are extracted only from data ingested after the type exists. There is no automatic backfill. An optional admin action (proposed extension, not yet listed in 03 §5.3) `POST /business-operation-definitions/1/backfill {"window":"P1D"}` scans `span` like UC-07 and appends `trace_correlation` rows.
 
 **Postconditions**
 
-- The correlation type is ACTIVE and observations flow.
+- The business operation definition is ACTIVE and observations flow.
 
 **Business rules**
 
@@ -813,7 +813,7 @@ HTTP/1.1 201 Created
 |---|---|
 | **Primary actor** | Scheduler: `tc-maintenance` CorrelationResolver (every 10 s, ShedLock `correlation-resolver`) |
 | **Trigger** | New `trace_correlation` rows beyond the watermark. |
-| **Preconditions** | Correlation type `idp.login` is ACTIVE. T1 and T2 have been ingested (UC-01). |
+| **Preconditions** | Business operation definition `idp.login` is ACTIVE. T1 and T2 have been ingested (UC-01). |
 | **Sequence** | [SD-10](07-sequence-diagrams.md#sd-10--uc-09-idp-login-t1-t2-t3-linked-into-one-business-operation) |
 
 **Main success scenario** (IdP: T1, T2, T3 arrive in natural order)
@@ -824,13 +824,13 @@ HTTP/1.1 201 Created
    - It selects `trace_correlation WHERE id > 9000 ORDER BY id LIMIT 10000`, which returns row 9001.
    - It looks up `correlation_value(1, 'as-777')`: not found.
    - It loads the other observations of T1 of type 1: none.
-   - The union-find component is `{as-777}` with trace `{T1}`, and no existing operation is involved, so it creates `business_operation(id=uuidv7() → 0193a6f2-6c1e-7b3a-9f10-2d4c5e6f7a80, first_seen=09:15:02.130Z, last_seen=09:15:02.130Z, correlation_type_id=1, display_value='as-777', trace_count=1, merged_into=NULL)`.
+   - T1's only value `as-777` has no operation, so it creates `business_operation(id=uuidv7() → 0193a6f2-6c1e-7b3a-9f10-2d4c5e6f7a80, first_seen=09:15:02.130Z, last_seen=09:15:02.130Z, operation_definition_id=1, display_value='as-777', trace_count=1, merged_into=NULL)`.
    - It inserts `correlation_value(1, 'as-777', op, op.first_seen, now())`.
    - It sets `last_processed_id = 9001` and commits.
 3. **T2 ingested.** It appends rows 9050 (`as-777`, T2, key 1) and 9051 (`code-abc`, T2, key 2).
 4. **Resolver tick N+1.**
    - `as-777` maps to op 0193a6f2…; `code-abc` is unknown.
-   - Both values occur on T2, so they are in one component, whose only existing operation is 0193a6f2….
+   - Both values occur on T2, and the only operation they keep is 0193a6f2….
    - The `merge_window` check passes: 09:15:31 is within [first_seen − 24 h, last_seen + 24 h].
    - It inserts `correlation_value(1, 'code-abc', 0193a6f2…)`, updates the op to `last_seen=09:15:31.6Z` and `trace_count = 2` (recount: distinct traces over values {as-777, code-abc} = {T1, T2}).
    - It advances the watermark.
@@ -856,7 +856,7 @@ HTTP/1.1 201 Created
 
 - BR-09-1: Linking is asynchronous and eventually consistent. Ingestion never blocks on it.
 - BR-09-2: The resolver is single-leader (ShedLock), so there are no concurrent merges.
-- BR-09-3: Different correlation types never merge.
+- BR-09-3: Different business operation definitions never merge.
 
 **NFRs**
 
@@ -870,7 +870,7 @@ HTTP/1.1 201 Created
 | Field | Value |
 |---|---|
 | **Primary actor** | Scheduler: CorrelationResolver |
-| **Trigger** | One union-find component of new observations touches ≥ 2 existing root operations of the same type. |
+| **Trigger** | The values of one trace keep ≥ 2 root operations of the same business operation definition. |
 | **Preconditions** | Two operations exist that later turn out to be one. |
 | **Sequence** | [SD-11](07-sequence-diagrams.md#sd-11--uc-10-alias-arrives-first-and-operations-are-merged) |
 
@@ -881,8 +881,8 @@ HTTP/1.1 201 Created
 3. **Tick N+1.** `code-abc` is unknown, and T3 has no other observations of type 1. The resolver creates **provisional** operation **B** (`display_value=NULL`, first_seen 09:15:33) and maps `code-abc → B`.
 4. T2's rows arrive: (`as-777`, T2) and (`code-abc`, T2).
 5. **Tick N+2.**
-   - The component for T2 is {`as-777` → A, `code-abc` → B}, so it touches two roots.
-   - Both pass the `merge_window` check, and neither is capped.
+   - T2's values keep {`as-777` → A, `code-abc` → B}: two roots.
+   - Both pass the `merge_window` check, and the merged operation (1 + 1 + 1 = 3 traces) is within the size limit.
    - The survivor rule picks **A**: it has a display value, beating the provisional B.
    - In one transaction:
      - `UPDATE business_operation SET merged_into = A WHERE id = B`;
@@ -908,7 +908,7 @@ HTTP/1.1 201 Created
 **Business rules**
 
 - BR-10-1: Deterministic survivor rule (05 §4.11). The result is independent of processing order.
-- BR-10-2: Merges are irreversible. A wrong correlation-type design is fixed by disabling the type, creating a corrected one and backfilling.
+- BR-10-2: Merges are irreversible. A wrong business-operation-definition design is fixed by disabling the type, creating a corrected one and backfilling.
 
 **NFRs**
 
@@ -1217,7 +1217,7 @@ LIMIT 5000;
 |---|---|
 | **Primary actor** | Trace Analyst |
 | **Trigger** | A user complains "I couldn't log in to the bookstore at 09:15". The analyst looks up the login by session id, or clicks a business-operation chip in a trace. |
-| **Preconditions** | Correlation type `idp.login` is ACTIVE, and the operation has been resolved (UC-09/10). |
+| **Preconditions** | Business operation definition `idp.login` is ACTIVE, and the operation has been resolved (UC-09/10). |
 | **Sequence** | [SD-15](07-sequence-diagrams.md#sd-15--uc-14-business-operation-timeline-from-the-ui); digest-tier fallback in [SD-22](07-sequence-diagrams.md#sd-22--uc-22-cross-tier-search-and-trace-by-id-fallback) |
 
 **Main success scenario**
@@ -1228,9 +1228,9 @@ LIMIT 5000;
 GET /api/v1/business-operations?type=idp.login&value=as-777&from=2026-11-21T00:00:00Z&to=2026-11-22T00:00:00Z
 ```
 
-   `BusinessOperationService` resolves `correlation_type.name` to id, then `correlation_value (1,'as-777')` to `operation_id`, then `business_operation` by `(id, operation_first_seen)`, following `merged_into` if needed (depth ≤ 1). It returns a list containing a single item.
+   `BusinessOperationService` resolves `business_operation_definition.name` to id, then `correlation_value (1,'as-777')` to `operation_id`, then `business_operation` by `(id, operation_first_seen)`, following `merged_into` if needed (depth ≤ 1). It returns a list containing a single item.
 
-   If `value` is omitted, it lists operations of the type in `[from, to]` from `business_operation` partitions (`WHERE correlation_type_id = ? AND first_seen BETWEEN ? AND ? AND merged_into IS NULL ORDER BY first_seen DESC`, keyset).
+   If `value` is omitted, it lists operations of the type in `[from, to]` from `business_operation` partitions (`WHERE operation_definition_id = ? AND first_seen BETWEEN ? AND ? AND merged_into IS NULL ORDER BY first_seen DESC`, keyset).
 2. The UI opens the details:
 
 ```http
@@ -1240,7 +1240,7 @@ GET /api/v1/business-operations/0193a6f2-6c1e-7b3a-9f10-2d4c5e6f7a80
 3. The service does the following:
    - loads the operation;
    - loads all `correlation_value` rows for it (index on `operation_id`);
-   - loads `trace_correlation` rows for those values: `WHERE correlation_type_id=1 AND value = ANY(?)`, restricted to `observed_at` within `[first_seen − merge_window, last_seen + merge_window]`;
+   - loads `trace_correlation` rows for those values: `WHERE operation_definition_id=1 AND value = ANY(?)`, restricted to `observed_at` within `[first_seen − merge_window, last_seen + merge_window]`;
    - takes the distinct trace ids and their linking key and step label;
    - joins `trace_summary` (trace_day near `observed_at`);
    - adds the indexed attributes of each trace for display (`auth.factor`, `client_id`, `user_id`);
@@ -1294,7 +1294,7 @@ GET /api/v1/business-operations/0193a6f2-6c1e-7b3a-9f10-2d4c5e6f7a80
 - **1a. Value not found.** `200` with an empty list. If the value exists in `trace_correlation` but the resolver has not yet processed it, the response contains `"pendingResolution": true`. This is checked with `trace_correlation.id > correlation_resolver_state.last_processed_id`.
 - **2a. Merged id requested.** The survivor is returned with `mergedFrom`.
 - **2b. Operation exceeded the hub cap.** The timeline is capped at the first 500 traces, with `"truncated": true`.
-- **1b. Lookup older than n days, or with `outcome`.** `GET /business-operations?type=idp.login&value=as-777&outcome=SUCCESS&from&to` searches `business_operation` (FULL) and `business_operation_digest` (by `(correlation_type_id, display_value)` or `(correlation_type_id, outcome, first_seen DESC)`), and each item carries `"tier"` and, for digests, `"outcome"` (UC-22).
+- **1b. Lookup older than n days, or with `outcome`.** `GET /business-operations?type=idp.login&value=as-777&outcome=SUCCESS&from&to` searches `business_operation` (FULL) and `business_operation_digest` (by `(operation_definition_id, display_value)` or `(operation_definition_id, outcome, first_seen DESC)`), and each item carries `"tier"` and, for digests, `"outcome"` (UC-22).
 - **2c. Operation no longer in the full tier.** `GET /business-operations/{id}` falls back to `business_operation_digest`. The timeline is built from `steps` (step label, trace, start, duration, trace outcome); clicking a bar opens the trace digest (UC-22). Values come from the digest attributes, so only retained keys are shown.
 - **3a. Some member traces already compacted, operation still in the full tier.** Since ADR-13 `trace_summary` and `business_operation` share n days, but the monthly `business_operation` partition can outlive the daily `trace_summary` partitions (≤ ~38 days). Such traces are shown from `trace_digest` with `"tier": "DIGEST"`; if a trace was excluded from compaction it is shown as `{"traceId": "...", "expired": true}`.
 
@@ -1641,10 +1641,10 @@ WITH chunk AS (
 ), ops AS (                                     -- root business operation of each trace, if any
   SELECT DISTINCT ON (c.trace_id) c.trace_id, COALESCE(bo.merged_into, bo.id) AS operation_id
   FROM tc.trace_correlation c
-  JOIN tc.correlation_value cv ON cv.correlation_type_id = c.correlation_type_id AND cv.value = c.value
+  JOIN tc.correlation_value cv ON cv.operation_definition_id = c.operation_definition_id AND cv.value = c.value
   JOIN tc.business_operation bo ON bo.id = cv.operation_id AND bo.first_seen = cv.operation_first_seen
   WHERE c.trace_id IN (SELECT trace_id FROM chunk)
-  ORDER BY c.trace_id, c.correlation_type_id
+  ORDER BY c.trace_id, c.operation_definition_id
 )
 INSERT INTO tc.trace_digest (trace_day, trace_id, start_time, duration_ns, root_service_id, root_name_id,
                              span_count, error_count, outcome, service_ids, business_operation_id,
@@ -1688,7 +1688,7 @@ ON CONFLICT (trace_id, trace_day) DO NOTHING;
 
 ```json
 {
-  "op_day": "2026-11-21", "operation_id": "0193a6f2-6c1e-7b3a-9f10-2d4c5e6f7a80", "correlation_type_id": 1,
+  "op_day": "2026-11-21", "operation_id": "0193a6f2-6c1e-7b3a-9f10-2d4c5e6f7a80", "operation_definition_id": 1,
   "display_value": "as-777", "first_seen": "2026-11-21T09:15:02.130Z", "last_seen": "2026-11-21T09:15:33.044Z",
   "trace_count": 3, "outcome": 1, "outcome_detail": null,
   "steps": [
@@ -1865,7 +1865,7 @@ LIMIT :limit + 1;
 ```
 
    The UI shows the tier badge on each row and the warning "older than 7 days not searched: PREFIX on client_id is not available for digests".
-6. **Historical business operation.** Three weeks later (2026-12-15, after the November partition of `business_operation` was dropped through the drop gate) a user complains about that login: `GET /api/v1/business-operations?type=idp.login&value=as-777&outcome=SUCCESS&from=2026-11-21T00:00:00Z&to=2026-11-22T00:00:00Z`. `BusinessOperationService` queries `business_operation` (FULL: nothing left for November) and `business_operation_digest` by `(correlation_type_id, display_value)` with `outcome = 1`, and returns one item with `"tier": "DIGEST"` and `"outcome": "SUCCESS"`.
+6. **Historical business operation.** Three weeks later (2026-12-15, after the November partition of `business_operation` was dropped through the drop gate) a user complains about that login: `GET /api/v1/business-operations?type=idp.login&value=as-777&outcome=SUCCESS&from=2026-11-21T00:00:00Z&to=2026-11-22T00:00:00Z`. `BusinessOperationService` queries `business_operation` (FULL: nothing left for November) and `business_operation_digest` by `(operation_definition_id, display_value)` with `outcome = 1`, and returns one item with `"tier": "DIGEST"` and `"outcome": "SUCCESS"`.
 7. `GET /api/v1/business-operations/0193a6f2-6c1e-7b3a-9f10-2d4c5e6f7a80` falls back to `business_operation_digest` and builds the timeline from `steps`:
 
 ```json
@@ -1935,7 +1935,7 @@ LIMIT :limit + 1;
 | **Primary actor** | TC Admin |
 | **Supporting** | `tc-control-plane`; `tc-maintenance` DigestCompactor and PartitionManager (consumers of the configuration) |
 | **Trigger** | The business wants 90 days of login history with outcome, while full span detail is needed only for a week; the DPO requires user ids in long-term storage to be pseudonymised. |
-| **Preconditions** | Admin has `TC_ADMIN`. Correlation type `idp.login` exists (UC-08). |
+| **Preconditions** | Admin has `TC_ADMIN`. Business operation definition `idp.login` exists (UC-08). |
 | **Sequence** | [SD-23](07-sequence-diagrams.md#sd-23--uc-23-configure-retention-tiers-retained-attribute-and-outcome-rule) |
 
 **Main success scenario**
@@ -1950,7 +1950,7 @@ Authorization: Bearer <JWT with TC_ADMIN>
 { "fullDays": 7, "digestDays": 90 }
 ```
 
-2. `tc-control-plane` validates `RetentionTiers` (05 §4.12): `fullDays ≥ 2`; `fullDays` > the longest `merge_window` of any correlation type, in days rounded up (`idp.login`: PT24H → 1 d); `digestDays ≥ 0`. In **one transaction** it updates every `retention_policy` row of tier FULL to `retention = 7 days` and every row of tier DIGEST to `retention = 97 days` (n + m), checks `RetentionPolicy.validateSet`, bumps `config_revision`, writes the audit record and emits `RetentionTiersChanged`:
+2. `tc-control-plane` validates `RetentionTiers` (05 §4.12): `fullDays ≥ 2`; `fullDays` > the longest `merge_window` of any business operation definition, in days rounded up (`idp.login`: PT24H → 1 d); `digestDays ≥ 0`. In **one transaction** it updates every `retention_policy` row of tier FULL to `retention = 7 days` and every row of tier DIGEST to `retention = 97 days` (n + m), checks `RetentionPolicy.validateSet`, bumps `config_revision`, writes the audit record and emits `RetentionTiersChanged`:
 
 ```json
 HTTP/1.1 200 OK
@@ -1991,10 +1991,10 @@ POST /api/v1/admin/indexed-attributes
 ```
 
    The key is created in BACKFILLING automatically (UC-07). The backfill covers the full tier, so days compacted afterwards carry the key.
-5. Admin opens *Admin → Correlation types → idp.login → Outcome rule* and saves:
+5. Admin opens *Admin → Business operation definitions → idp.login → Outcome rule* and saves:
 
 ```http
-PUT /api/v1/admin/correlation-types/1
+PUT /api/v1/admin/business-operation-definitions/1
 {
   "name": "idp.login",
   "description": "One end-user login at the IdP: password, second factor, code-to-token exchange",
@@ -2007,7 +2007,7 @@ PUT /api/v1/admin/correlation-types/1
 }
 ```
 
-   `tc-control-plane` validates the rule (UC-08 step 2): `token-exchange` is the step label of `oauth.authorization_code`; no `outcomeKey` is set. It stores `correlation_type.outcome_rule = '{"finalStepLabel":"token-exchange"}'` and bumps `config_revision`.
+   `tc-control-plane` validates the rule (UC-08 step 2): `token-exchange` is the step label of `oauth.authorization_code`; no `outcomeKey` is set. It stores `business_operation_definition.outcome_rule = '{"finalStepLabel":"token-exchange"}'` and bumps `config_revision`.
 6. Admin adds a compaction exclusion for health checks:
 
 ```http
@@ -2034,7 +2034,7 @@ POST /api/v1/admin/compaction-exclusions
 
 **Postconditions**
 
-- `retention_policy`, `indexed_attribute`, `correlation_type` and `compaction_exclusion` hold the new values; `config_revision` was bumped once per change; every change is audited.
+- `retention_policy`, `indexed_attribute`, `business_operation_definition` and `compaction_exclusion` hold the new values; `config_revision` was bumped once per change; every change is audited.
 - No data has been moved or deleted by the request itself.
 
 **Business rules**
@@ -2057,14 +2057,14 @@ POST /api/v1/admin/compaction-exclusions
 |---|---|---|---|
 | **FR1** Ingest all traces (sampling 1.0) | UC-01, UC-02, UC-03, UC-17, UC-18 | `tc-ingester` (TraceBatchListener, TraceMessageParser, SpanNormalizer, ResourceDeduplicator, DictionaryCache, TraceDayResolver, AttributeIndexer, SpanBatchWriter); `tc-maintenance` (PartitionManager) | `otlp-traces`, `otlp-traces.dlq`; `span`, `trace_summary`, `resource`, `instrumentation_scope`, `service`, `span_name`, `attribute_key`, `trace_attribute`, `span_link` |
 | **FR2** Enrichment from client-defined, initially unknown topics | UC-04, UC-05, UC-06, UC-18 (d) | `tc-control-plane`; `tc-enricher` (EnrichmentSourceRegistry, DynamicContainerManager, SecretResolver, TraceContextExtractor, FieldExtractor, PayloadDecoder, EnrichmentWriter) | `kafka_connection`, `enrichment_source`, `enrichment_source_revision`, `config_revision`, `trace_enrichment`, `trace_attribute`, `trace_correlation`; client topics; `tc-enrichment.dlq` |
-| **FR3** Link traces into a business operation | UC-08, UC-09, UC-10, UC-14, UC-20, UC-21 (operation digest and outcome), UC-22 | `tc-control-plane`; `tc-ingester` CorrelationExtractor; `tc-enricher` EnrichmentWriter; `tc-maintenance` CorrelationResolver; `tc-query-api` | `correlation_type`, `correlation_key`, `trace_correlation`, `correlation_value`, `business_operation`, `correlation_resolver_state`, `span_link`, `shedlock`, `business_operation_digest` |
+| **FR3** Link traces into a business operation | UC-08, UC-09, UC-10, UC-14, UC-20, UC-21 (operation digest and outcome), UC-22 | `tc-control-plane`; `tc-ingester` CorrelationExtractor; `tc-enricher` EnrichmentWriter; `tc-maintenance` CorrelationResolver; `tc-query-api` | `business_operation_definition`, `correlation_key`, `trace_correlation`, `correlation_value`, `business_operation`, `correlation_resolver_state`, `span_link`, `shedlock`, `business_operation_digest` |
 | **FR4** Query by trace id, time range, attributes | UC-07, UC-11, UC-12, UC-13, UC-15, UC-20, UC-22 | `tc-control-plane`; `tc-maintenance` AttributeBackfill; `tc-query-api` (TraceQueryService, SearchService, SelectivityEstimator, TraceAssembler) | `indexed_attribute`, `attribute_key`, `trace_attribute`, `trace_summary`, `span`, `trace_enrichment`, `resource`, `trace_digest` |
 | **FR5** React UI | UC-11, UC-12, UC-14, UC-15, UC-19, UC-20, UC-22 (+ admin UC-04, UC-05, UC-07, UC-08, UC-23) | `tc-ui`, API gateway, `tc-query-api`, `tc-control-plane` | (read side of all) |
 | **NFR-ING** Throughput and latency at sampling 1.0 | UC-01, UC-17 | `tc-ingester`, PgBouncer, PG primary | `span`, `trace_summary`, `trace_attribute` (hourly partitions) |
 | **NFR-DUR** At-least-once with effectively-once effect | UC-02, UC-03, UC-17, UC-18 | `tc-ingester`, `tc-enricher` | all data tables (idempotent writes); `otlp-traces` as WAL |
 | **NFR-QRY** Query latency | UC-11, UC-12, UC-13, UC-14, UC-15, UC-22 | `tc-query-api`, PG replica | `trace_summary`, `trace_attribute`, `span`, `trace_digest`, `business_operation_digest` |
 | **NFR-RET** Bounded storage and retention (two tiers, ADR-13) | UC-16, UC-21, UC-23 | `tc-maintenance` PartitionManager (drop gate), DigestCompactor, DictionaryGc, StatsRefresher; `tc-control-plane` | `retention_policy`, all partitioned tables, `correlation_value`, `resource`, `trace_digest`, `business_operation_digest`, `compaction_state`, `compaction_exclusion` |
-| **FR-21 / FR-22 / FR-23** Business history after span detail expires: operation, outcome, retained custom attributes for n + m days (ADR-13) | UC-07, UC-08, UC-21, UC-22, UC-23 | `tc-control-plane`; `tc-maintenance` DigestCompactor; `tc-query-api` | `indexed_attribute` (`retain_in_digest`, `digest_transform`), `correlation_type.outcome_rule`, `trace_digest`, `business_operation_digest`, `compaction_state`, `compaction_exclusion` |
+| **FR-21 / FR-22 / FR-23** Business history after span detail expires: operation, outcome, retained custom attributes for n + m days (ADR-13) | UC-07, UC-08, UC-21, UC-22, UC-23 | `tc-control-plane`; `tc-maintenance` DigestCompactor; `tc-query-api` | `indexed_attribute` (`retain_in_digest`, `digest_transform`), `business_operation_definition.outcome_rule`, `trace_digest`, `business_operation_digest`, `compaction_state`, `compaction_exclusion` |
 | **NFR-SEC** Authentication, authorisation, PII | UC-19, UC-04 (secrets), UC-14, UC-22, UC-23 (digest transforms) | `tc-ui`, gateway, `tc-query-api`, `tc-control-plane`, `tc-enricher` SecretResolver | `kafka_connection` (secret refs only) |
 | **NFR-KAFKA** No dynamic topics, no Kafka Streams | UC-03, UC-04, UC-05, UC-18 | all Kafka clients (`allow.auto.create.topics=false`, `spring.kafka.admin.auto-create=false`, no RetryableTopic) | `otlp-traces`, `otlp-traces.dlq`, `tc-enrichment.dlq` (pre-created) |
 | **NFR-CFG** Runtime reconfiguration ≤ 30 s | UC-05, UC-07, UC-08, UC-23 | `tc-control-plane`, ConfigSnapshotPoller, EnrichmentSourceRegistry | `config_revision` |

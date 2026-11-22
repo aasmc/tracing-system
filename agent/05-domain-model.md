@@ -32,9 +32,9 @@ Package layout of `tc-domain`:
 | `domain.attribute` | `AttributeKey`, `AttributeValue` (sealed), `Attributes`, `AttributeOrigin`, `IndexedAttribute`, `DigestTransform`, `PiiClass` |
 | `domain.resource` | `Resource`, `ResourceId`, `InstrumentationScope`, `ScopeId`, `ServiceId`, `SpanNameId` |
 | `domain.enrichment` | `KafkaConnection`, `EnrichmentSource`, `SourceRevision`, `SourceDefinition`, `TraceContextExtraction` (sealed), `FieldMapping`, `Transform` (sealed), `EnrichmentRecord` |
-| `domain.correlation` | `CorrelationType`, `CorrelationKey`, `OutcomeRule`, `CorrelationObservation`, `CorrelationValue`, `BusinessOperation`, `OperationForest` |
+| `domain.correlation` | `BusinessOperationDefinition`, `CorrelationKey`, `OutcomeRule`, `CorrelationObservation`, `CorrelationValue`, `BusinessOperation`, `OperationForest` |
 | `domain.config` | `ConfigRevision`, `ConfigSnapshot`, `RetentionPolicy`, `RetentionTier`, `RetentionTiers` |
-| `domain.digest` | `TraceDigest`, `BusinessOperationDigest`, `DigestStep`, `TraceOutcome`, `OperationOutcome`, `CompactionExclusion`, `CompactionState`, `CompactionStatus` (ADR-13, two-tier retention) |
+| `domain.digest` | `TraceDigest`, `BusinessOperationDigest`, `DigestStep`, `TraceOutcome`, `OperationOutcome`, `CompactionExclusion`, `DigestProgress`, `DigestStatus` (ADR-13, two-tier retention) |
 | `domain.event` | `DomainEvent` (sealed) and its records |
 | `domain.dlq` | `DeadLetterReason`, `DeadLetter` |
 
@@ -69,12 +69,12 @@ The terms below are used with exactly these meanings in code, API, UI and docume
 | **Trace Context Extraction** | The strategy that finds the trace (and optionally span) id in an enrichment event: `TRACEPARENT_HEADER`, `RAW_HEADER` or `PAYLOAD_POINTER`. | `TraceContextExtraction` (sealed) |
 | **Field Mapping** | A rule taking one field from the event (payload JSON Pointer, header, record key or record timestamp), applying a **Transform**, and producing one attribute `targetKey` of a declared type. | `FieldMapping`, `Transform` |
 | **Enrichment Record** | One attribute value derived from one enrichment event. It is append-only, carries the Kafka record coordinates, and is idempotent on them. | `EnrichmentRecord`; `tc.trace_enrichment` |
-| **Correlation Type** | A named business-operation family (e.g. `idp.login`). It declares the attribute keys whose values identify an operation, plus a merge window. | `CorrelationType`; `tc.correlation_type` |
-| **Correlation Key** | An attribute key that belongs to a correlation type. Its role is `PRIMARY` (the natural business id, used as the display value) or `ALIAS` (a secondary id that bridges traces, e.g. an authorization code). It may carry a step label. | `CorrelationKey`; `tc.correlation_key` |
+| **Business Operation Definition** | A named business-operation family (e.g. `idp.login`). It declares the attribute keys whose values identify an operation, plus a merge window. | `BusinessOperationDefinition`; `tc.business_operation_definition` |
+| **Correlation Key** | An attribute key that belongs to a business operation definition. Its role is `PRIMARY` (the natural business id, used as the display value) or `ALIAS` (a secondary id that bridges traces, e.g. an authorization code). It may carry a step label. | `CorrelationKey`; `tc.correlation_key` |
 | **Correlation Observation** | One fact: "trace X carries value V for correlation key K". It is appended synchronously by the ingester or the enricher. | `CorrelationObservation`; `tc.trace_correlation` |
-| **Correlation Value** | The current mapping from (correlation type, value) to business operation, maintained by the resolver. | `CorrelationValue`; `tc.correlation_value` |
+| **Correlation Value** | The current mapping from (business operation definition, value) to business operation, maintained by the resolver. | `CorrelationValue`; `tc.correlation_value` |
 | **Business Operation** | The set of traces that represent one business action (one IdP login) and are connected through shared correlation values. It can be merged into another operation. | `BusinessOperation`; `tc.business_operation` |
-| **Merge** | Joining two business operations when a later observation shows they share a value. The loser points to the survivor through `merged_into`. Implemented as union-find. | `OperationForest` |
+| **Merge** | Joining two business operations when a later observation shows they share a value. The loser points to the survivor through `merged_into`. | `OperationLinker`, `OperationMergePolicy` |
 | **Span Link** | A native OTel link from a span to a span of another trace, indexed in both directions. | `SpanLinkRef`; `tc.span_link` |
 | **Retention Policy** | Per table: its retention **tier** (`FULL` or `DIGEST`), how long data is kept, the partition granularity, and how far ahead partitions are pre-created. Durations are set per tier, not per table (ADR-13). | `RetentionPolicy`; `tc.retention_policy` |
 | **Full tier** | All detailed trace data: `span`, `trace_attribute`, `span_link`, `trace_summary`, `trace_enrichment`, `trace_correlation`, `correlation_value`, `business_operation`. Kept `fullDays` = n days (default 7, min 2). Span-level detail, brute-force search and every search operator exist only here. | `RetentionTier.FULL`; `retention_policy.tier = 'FULL'` |
@@ -83,9 +83,9 @@ The terms below are used with exactly these meanings in code, API, UI and docume
 | **Business Operation Digest** | One row per root business operation in the digest tier: type, display value, first/last seen, trace count, **operation outcome**, ordered steps (one per member trace) and the union of the members' retained attributes. | `BusinessOperationDigest`; `tc.business_operation_digest` |
 | **Retained attribute** | An indexed attribute key flagged `retain_in_digest = true`. Its values are copied from `trace_attribute` into `trace_digest.attributes` at compaction. A retained key must be indexed: compaction never reads spans. Flagging a key is **not retroactive** for already-compacted days. | `IndexedAttribute.retainInDigest`; `indexed_attribute.retain_in_digest` |
 | **Digest transform** | How a retained value is stored in the digest: `NONE` (as is), `SHA256` (lowercase hex of SHA-256 over the UTF-8 value) or `MASK` (first 2 chars + `***`). It lets PII stay joinable (SHA256) or recognisable (MASK) without keeping the raw value for n + m days. | `DigestTransform`; `indexed_attribute.digest_transform` |
-| **Outcome rule** | Per correlation type, optional: how to derive the outcome of a business operation at compaction from `outcomeKey` + `successValues` / `failureValues`, member errors, and `finalStepLabel`. Evaluated in a fixed order (§4.10). | `OutcomeRule`; `correlation_type.outcome_rule jsonb` |
+| **Outcome rule** | Per business operation definition, optional: how to derive the outcome of a business operation at compaction from `outcomeKey` + `successValues` / `failureValues`, member errors, and `finalStepLabel`. Evaluated in a fixed order (§4.10). | `OutcomeRule`; `business_operation_definition.outcome_rule jsonb` |
 | **Operation outcome** | Result of the outcome rule for one business operation: `UNKNOWN` (0), `SUCCESS` (1), `FAILED` (2), `INCOMPLETE` (3). The trace-level counterpart is the **trace outcome**: `OK` (1, `error_count = 0`) or `ERROR` (2). | `OperationOutcome`, `TraceOutcome`; `business_operation_digest.outcome`, `trace_digest.outcome` |
-| **Compaction** | The batch job (`DigestCompactor` in `tc-maintenance`) that turns one whole trace day of full-tier data, older than n days, into digest rows with set-based `INSERT ... SELECT` statements, in 1-hour chunks, resumably and idempotently. It never reads `span`. | `CompactionState`; `tc.compaction_state` |
+| **Compaction** | The batch job (`DigestCompactor` in `tc-maintenance`) that turns one whole trace day of full-tier data, older than n days, into digest rows with set-based `INSERT ... SELECT` statements, in 1-hour chunks, resumably and idempotently. It never reads `span`. | `DigestProgress`; `tc.compaction_state` |
 | **Compaction exclusion** | A configured pattern (`service_name`, `root_name_pattern` as SQL LIKE) for traces that are **not** digested, e.g. health checks `GET /actuator/%`, unless the trace belongs to a business operation. | `CompactionExclusion`; `tc.compaction_exclusion` |
 | **Drop gate** | The rule in `PartitionManager` that a full-tier partition may be dropped only if it is older than n days **and** every trace day whose compaction read window overlaps it is `DONE`. Uncompacted data is never dropped; if compaction lags, full-tier data is kept longer. | `PartitionManager`; `compaction_state.status` |
 | **Config Revision** | A single monotonically increasing counter that `tc-control-plane` bumps in the same transaction as any config change. Data-plane services poll it every 10 s and reload their snapshot when it changes. | `ConfigRevision`; `tc.config_revision` |
@@ -110,10 +110,10 @@ Words that are deliberately **not** used:
 |---|---|---|---|
 | **Ingestion** | `tc-ingester` | TraceFragment, Span, TraceSummary, Resource, InstrumentationScope, dictionaries, TraceDay | `span`, `trace_summary`, `resource`, `instrumentation_scope`, `service`, `span_name`, `attribute_key` (insert of new keys), `span_link`; appends to `trace_attribute` and `trace_correlation` |
 | **Enrichment** | `tc-enricher` | EnrichmentSource runtime, TraceContextExtraction, FieldMapping, EnrichmentRecord | `trace_enrichment`; appends to `trace_attribute` and `trace_correlation` |
-| **Correlation** | `tc-maintenance` (CorrelationResolver). The extraction half runs inside Ingestion and Enrichment. | CorrelationType, CorrelationObservation, CorrelationValue, BusinessOperation | `business_operation`, `correlation_value`, `correlation_resolver_state` |
+| **Correlation** | `tc-maintenance` (CorrelationResolver). The extraction half runs inside Ingestion and Enrichment. | BusinessOperationDefinition, CorrelationObservation, CorrelationValue, BusinessOperation | `business_operation`, `correlation_value`, `correlation_resolver_state` |
 | **Query** | `tc-query-api`, `tc-ui` | TraceView, TraceSummaryView, TraceDigestView, BusinessOperationView, SearchCriteria (split at the tier boundary), PiiMaskingPolicy | none (read replica only); reads both tiers |
-| **Configuration (control plane)** | `tc-control-plane` | KafkaConnection, EnrichmentSource definition and lifecycle, IndexedAttribute (incl. retainInDigest, digestTransform), CorrelationType (incl. OutcomeRule), RetentionPolicy / RetentionTiers, CompactionExclusion, ConfigRevision | `kafka_connection`, `enrichment_source`, `enrichment_source_revision`, `indexed_attribute`, `correlation_type`, `correlation_key`, `retention_policy`, `compaction_exclusion`, `config_revision`; inserts into `attribute_key` |
-| **Retention** | `tc-maintenance` (PartitionManager, **DigestCompactor**, AttributeBackfill, DictionaryGc, StatsRefresher) | RetentionPolicy enforcement, Partition, **Compaction** (TraceDigest, BusinessOperationDigest, OutcomeRule evaluation, CompactionState), Drop gate | DDL on partitioned tables; `trace_digest`, `business_operation_digest`, `compaction_state`; `indexed_attribute.status` (BACKFILLING to ACTIVE); `resource` GC; `correlation_value` cleanup |
+| **Configuration (control plane)** | `tc-control-plane` | KafkaConnection, EnrichmentSource definition and lifecycle, IndexedAttribute (incl. retainInDigest, digestTransform), BusinessOperationDefinition (incl. OutcomeRule), RetentionPolicy / RetentionTiers, CompactionExclusion, ConfigRevision | `kafka_connection`, `enrichment_source`, `enrichment_source_revision`, `indexed_attribute`, `business_operation_definition`, `correlation_key`, `retention_policy`, `compaction_exclusion`, `config_revision`; inserts into `attribute_key` |
+| **Retention** | `tc-maintenance` (PartitionManager, **DigestCompactor**, AttributeBackfill, DictionaryGc, StatsRefresher) | RetentionPolicy enforcement, Partition, **Compaction** (TraceDigest, BusinessOperationDigest, OutcomeRule evaluation, DigestProgress), Drop gate | DDL on partitioned tables; `trace_digest`, `business_operation_digest`, `compaction_state`; `indexed_attribute.status` (BACKFILLING to ACTIVE); `resource` GC; `correlation_value` cleanup |
 
 `tc-schema-migrator` is not a context. It is infrastructure that owns the DDL migrations for all contexts.
 
@@ -146,7 +146,7 @@ flowchart LR
 
     CFG -- "Customer/Supplier: config tables + config_revision (Open Host: ConfigSnapshot)" --> ING
     CFG -- "Customer/Supplier: enrichment_source revisions" --> ENR
-    CFG -- "correlation_type / correlation_key" --> COR
+    CFG -- "business_operation_definition / correlation_key" --> COR
     CFG -- "retention_policy (tiers), indexed_attribute (retain_in_digest), outcome_rule, compaction_exclusion" --> RET
 
     ING -- "trace_correlation (published table)" --> COR
@@ -192,7 +192,7 @@ flowchart LR
 5. **Shared Kernel `tc-domain`.**
    - Contains `TraceId`, `SpanId`, `AttributeKey`, `AttributeValue`, `Attributes`, `AttributeOrigin`, `ConfigRevision`, `ConfigSnapshot` and the definition records.
    - Changes require agreement of all contexts, because all modules live in one Maven repo, `trace-collector`.
-   - The kernel is intentionally small and free of behaviour that belongs to a single context. For example, union-find is in `domain.correlation` and is used only by the resolver.
+   - The kernel is intentionally small and free of behaviour that belongs to a single context. For example, operation linking is in `domain.correlation` and is used only by the resolver.
 6. **Query: Conformist to the persistence schema, with separate read models.**
    - The Query context does not reuse write-side aggregates. It has its own DTOs (`TraceSummaryDto` and others, see 03) and the masking policy.
 7. **Retention: Separate Ways with writers, Customer of the full tier for compaction.**
@@ -589,10 +589,12 @@ public record InstrumentationScope(ScopeId id, String name, String version, Stri
 }
 ```
 
-**Canonical encoding.** `ContentHash` encodes the content as:
+**Canonical encoding.** `ResourceHasher` encodes the content as bytes in which every text is written as `<UTF-8 byte length in decimal> ':' <UTF-8 bytes>`:
 
-1. `schemaUrl` (empty string if null), then `'\n'`;
-2. the attributes **sorted by key**, each written as `key '\u0001' typeName '\u0001' canonicalValue '\n'`.
+1. resource: the text `schemaUrl`; scope: the texts `name`, `version`, `schemaUrl` (`""` for null);
+2. the attributes **sorted by key**, each as the text `key`, the text `typeName`, the number of index tokens followed by `':'`, and each token as a text.
+
+Example: schema URL `s` with `host.name = "n1"` encodes as `1:s9:host.name6:STRING1:2:n1`. Because every text carries its length and every array its size, two different contents never share an encoding, whatever characters they hold (`[]` and `[""]` encode as `0:` and `1:0:`).
 
 That encoding is hashed with xxHash64, seed 0. The encoding is part of the domain contract. Changing it does not corrupt data, but it creates new `resource` rows for the same content. It would therefore be versioned (seed = encoding version) and announced.
 
@@ -761,12 +763,12 @@ public record TraceFragment(TraceId traceId, List<Span> spans, KafkaCoordinates 
 | **EnrichmentSource** (+ SourceRevision entities) | Configuration (definition); Enrichment (runtime) | source row + its revisions; lifecycle transitions are atomic with a `config_revision` bump | `enrichment_source`, `enrichment_source_revision` | `id`, unique `name` |
 | **EnrichmentRecord** | Enrichment | single immutable row | `trace_enrichment` | `(source_id, kafka_partition, kafka_offset, key_id, observed_at)` |
 | **IndexedAttribute** | Configuration / Retention (backfill) | one row | `indexed_attribute` | `key_id` |
-| **CorrelationType** (+ CorrelationKey entities) | Configuration | type + keys | `correlation_type`, `correlation_key` | `id`, unique `name` |
+| **BusinessOperationDefinition** (+ CorrelationKey entities) | Configuration | type + keys | `business_operation_definition`, `correlation_key` | `id`, unique `name` |
 | **BusinessOperation** | Correlation | operation + the `correlation_value` rows pointing at it; modified only by the single-leader resolver | `business_operation`, `correlation_value` | `id` uuidv7 (+ `first_seen` for partitioning) |
 | **RetentionPolicy** | Configuration / Retention | one row per table; durations changed per tier (`RetentionTiers`) in one transaction | `retention_policy` | `table_name` (+ `tier`) |
 | **TraceDigest** | Retention (compaction) | single immutable row, written once by `INSERT ... ON CONFLICT DO NOTHING` | `trace_digest` | `(trace_id, trace_day)` |
 | **BusinessOperationDigest** | Retention (compaction) | single immutable row per root operation, written once after all member trace days are compacted | `business_operation_digest` | `(operation_id, op_day)` |
-| **CompactionState** | Retention (compaction) | one row per trace day; modified only by the single-leader `DigestCompactor` | `compaction_state` | `trace_day` |
+| **DigestProgress** | Retention (compaction) | one row per trace day; modified only by the single-leader `DigestCompactor` | `compaction_state` | `trace_day` |
 | **CompactionExclusion** | Configuration | one row | `compaction_exclusion` | `id` |
 | **ConfigRevision** | Configuration | singleton | `config_revision` | `id = 1` |
 
@@ -863,7 +865,7 @@ classDiagram
         +KafkaCoordinates source
     }
     class CorrelationObservation {
-        +int correlationTypeId
+        +int operationDefinitionId
         +int correlationKeyId
         +String value
         +TraceId traceId
@@ -958,7 +960,7 @@ classDiagram
         MASK
         +apply(String) String
     }
-    class CorrelationType {
+    class BusinessOperationDefinition {
         +int id
         +String name
         +Duration mergeWindow
@@ -987,7 +989,7 @@ classDiagram
         +UUID mergedInto
     }
     class CorrelationValue {
-        +int correlationTypeId
+        +int operationDefinitionId
         +String value
         +UUID operationId
     }
@@ -1012,8 +1014,8 @@ classDiagram
     TraceContextExtraction <|.. TraceparentHeader
     TraceContextExtraction <|.. RawHeader
     TraceContextExtraction <|.. PayloadPointer
-    CorrelationType "1" *-- "1..*" CorrelationKey
-    CorrelationType "1" *-- "0..1" OutcomeRule
+    BusinessOperationDefinition "1" *-- "1..*" CorrelationKey
+    BusinessOperationDefinition "1" *-- "0..1" OutcomeRule
     IndexedAttribute --> DigestTransform
     RetentionTiers ..> RetentionPolicy : sets retention of every row of a tier
     CorrelationValue "*" --> "1" BusinessOperation
@@ -1621,129 +1623,60 @@ Built-in rows (`service.name` with origin RESOURCE, `span.name` with origin DERI
 - `value_num` is filled only when the key is registered `numeric = true` and the value is LONG or DOUBLE (or a parseable STRING);
 - `ts` is the span start (SPAN and RESOURCE origin), the span start of the root (DERIVED), or `observed_at` (ENRICHMENT).
 
-### 4.10 CorrelationType and CorrelationKey
+### 4.10 BusinessOperationDefinition and CorrelationKey
 
 ```java
 package ru.aasmc.tracing.collector.domain.correlation;
 
-import java.time.Duration;
-import java.util.HashSet;
-import java.util.List;
-import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
-
 public enum KeyRole { PRIMARY, ALIAS }
-public enum CorrelationTypeStatus { ACTIVE, DISABLED }
 
-public record CorrelationKey(int id, int keyId, AttributeKey key, KeyRole role, String stepLabel) {
-    public CorrelationKey {
-        if (stepLabel != null && stepLabel.length() > 64) throw new IllegalArgumentException("stepLabel <= 64 chars");
-    }
-}
+/** stepLabel: null or not blank (INVALID_OPERATION_DEFINITION); its length is configured in CorrelationLimits. */
+public record CorrelationKey(int id, AttributeKey key, KeyRole role, String stepLabel) { ... }
 
-public record CorrelationType(int id, String name, String description, Duration mergeWindow,
-                              CorrelationTypeStatus status, List<CorrelationKey> keys,
-                              OutcomeRule outcomeRule /* nullable: no rule => SUCCESS unless a member errored */) {
-    public static final Duration MIN_WINDOW = Duration.ofMinutes(1);
-    public static final Duration MAX_WINDOW = Duration.ofDays(30);
-
-    public CorrelationType {
-        if (name == null || !name.matches("[a-z0-9][a-z0-9._-]{1,62}")) throw new IllegalArgumentException("name");
-        if (mergeWindow == null) mergeWindow = Duration.ofDays(1);
-        if (mergeWindow.compareTo(MIN_WINDOW) < 0 || mergeWindow.compareTo(MAX_WINDOW) > 0)
-            throw new IllegalArgumentException("mergeWindow out of [1m, 30d]");
-        keys = List.copyOf(keys);
-        if (keys.stream().noneMatch(k -> k.role() == KeyRole.PRIMARY))
-            throw new IllegalArgumentException("at least one PRIMARY key required");
-        var seen = new HashSet<Integer>();
-        for (CorrelationKey k : keys)
-            if (!seen.add(k.keyId())) throw new IllegalArgumentException("key used twice: " + k.key());
-        if (outcomeRule != null && outcomeRule.finalStepLabel() != null
-                && keys.stream().noneMatch(k -> outcomeRule.finalStepLabel().equals(k.stepLabel())))
-            throw new IllegalArgumentException("finalStepLabel must be the stepLabel of one of the type's keys");
-    }
-
-    public java.util.Optional<CorrelationKey> keyFor(int attributeKeyId) {
-        return keys.stream().filter(k -> k.keyId() == attributeKeyId).findFirst();
-    }
-}
+/**
+ * name follows Names (INVALID_NAME); mergeWindow is positive (INVALID_MERGE_WINDOW); at least one PRIMARY key, no key id
+ * and no attribute twice (INVALID_OPERATION_DEFINITION); the outcome rule's finalStepLabel is the step label of one of
+ * the keys (UNKNOWN_STEP_LABEL); outcomeRule null means OutcomeRule.defaultRule().
+ * Name length, merge-window bounds, number of keys and outcome-rule sizes are configured in CorrelationLimits
+ * (CorrelationLimits.requireWithin), never hard-coded.
+ */
+public record BusinessOperationDefinition(int id, String name, Duration mergeWindow, List<CorrelationKey> keys,
+                                          OutcomeRule outcomeRule) { ... }
 ```
 
 #### 4.10.1 OutcomeRule
 
-Stored in the new column `correlation_type.outcome_rule jsonb NULL`, e.g. `{"outcomeKey":"business.outcome","successValues":["SUCCESS"],"failureValues":["FAILED","DENIED"],"finalStepLabel":"token-exchange"}`. All fields are optional. It is evaluated only by `DigestCompactor`, once per root operation, when the operation is compacted (§4.14).
+Stored in the new column `business_operation_definition.outcome_rule jsonb NULL`, e.g. `{"outcomeKey":"business.outcome","successValues":["SUCCESS"],"failureValues":["FAILED","DENIED"],"finalStepLabel":"token-exchange"}`. All fields are optional. It is evaluated only by `DigestCompactor`, once per root operation, when the operation is compacted (§4.14).
 
 ```java
 package ru.aasmc.tracing.collector.domain.correlation;
 
-import java.time.Instant;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
-import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
-import ru.aasmc.tracing.collector.domain.digest.OperationOutcome;
-import ru.aasmc.tracing.collector.domain.trace.TraceId;
-
+/**
+ * Rules (INVALID_OUTCOME_RULE): null value sets become empty; values are not blank; the sets do not overlap; values
+ * need an outcomeKey; finalStepLabel is null or not blank. Sizes are configured in CorrelationLimits.
+ */
 public record OutcomeRule(AttributeKey outcomeKey, Set<String> successValues, Set<String> failureValues,
                           String finalStepLabel) {
 
-    public OutcomeRule {
-        successValues = successValues == null ? Set.of() : Set.copyOf(successValues);
-        failureValues = failureValues == null ? Set.of() : Set.copyOf(failureValues);
-        if (!java.util.Collections.disjoint(successValues, failureValues))
-            throw new IllegalArgumentException("a value cannot be both success and failure");
-        if (outcomeKey == null && !(successValues.isEmpty() && failureValues.isEmpty()))
-            throw new IllegalArgumentException("successValues/failureValues need an outcomeKey");
-        if (finalStepLabel != null && (finalStepLabel.isBlank() || finalStepLabel.length() > 64))
-            throw new IllegalArgumentException("finalStepLabel 1..64 chars");
-        // Checked by the control plane (needs the snapshot): outcomeKey is an indexed key (read from trace_attribute).
-    }
-
-    /** What compaction knows about one member trace of the operation (from trace_digest / trace_attribute / trace_correlation). */
-    public record MemberTrace(TraceId traceId, Instant startTime, int errorCount,
-                              Optional<String> outcomeValue,      // raw value of outcomeKey on this trace, if any
-                              Set<String> stepLabels) {           // labels of the correlation keys that linked it
-        public MemberTrace { stepLabels = Set.copyOf(stepLabels); }
-    }
-
-    public record Evaluation(OperationOutcome outcome, String outcomeDetail /* raw outcomeKey value or null */) {}
-
-    /** No rule configured: rules 2 and 4 of the order below still apply. */
-    public static Evaluation evaluate(OutcomeRule ruleOrNull, List<MemberTrace> members) {
-        return (ruleOrNull == null ? new OutcomeRule(null, null, null, null) : ruleOrNull).evaluate(members);
-    }
+    public static OutcomeRule defaultRule() { ... }   // FAILED if any trace has an error, else SUCCESS
 
     /**
-     * Fixed evaluation order (ADR-13):
-     * 1. outcomeKey set and a value found on any member (the latest by trace start wins):
-     *    SUCCESS if in successValues, FAILED if in failureValues, else UNKNOWN; raw value kept as outcome_detail;
-     * 2. else any member trace has errorCount > 0 -> FAILED;
-     * 3. else finalStepLabel set: some member linked via a key with that label -> SUCCESS, otherwise INCOMPLETE;
-     * 4. else -> SUCCESS.
+     * Fixed evaluation order:
+     * 1. a member carries a value of outcomeKey: the latest such member (by start, then larger trace id) decides:
+     *    SUCCESS if in successValues, FAILED if in failureValues, else UNKNOWN; that value is the deciding value,
+     *    cut to maxDecidingValueLength code points (never splitting a character);
+     * 2. else any member has errorCount > 0 -> FAILED;
+     * 3. else finalStepLabel set: some member carries it -> SUCCESS, otherwise INCOMPLETE;
+     * 4. else -> SUCCESS. Without members the outcome is UNKNOWN.
      */
-    public Evaluation evaluate(List<MemberTrace> members) {
-        if (members.isEmpty()) return new Evaluation(OperationOutcome.UNKNOWN, null);
-        if (outcomeKey != null) {
-            Optional<String> latest = members.stream()
-                    .filter(m -> m.outcomeValue().isPresent())
-                    .max(Comparator.comparing(MemberTrace::startTime).thenComparing(MemberTrace::traceId))
-                    .flatMap(MemberTrace::outcomeValue);
-            if (latest.isPresent()) {
-                String v = latest.get();
-                OperationOutcome o = successValues.contains(v) ? OperationOutcome.SUCCESS
-                        : failureValues.contains(v) ? OperationOutcome.FAILED
-                        : OperationOutcome.UNKNOWN;
-                return new Evaluation(o, v);
-            }
-        }
-        if (members.stream().anyMatch(m -> m.errorCount() > 0)) return new Evaluation(OperationOutcome.FAILED, null);
-        if (finalStepLabel != null) {
-            boolean reached = members.stream().anyMatch(m -> m.stepLabels().contains(finalStepLabel));
-            return new Evaluation(reached ? OperationOutcome.SUCCESS : OperationOutcome.INCOMPLETE, null);
-        }
-        return new Evaluation(OperationOutcome.SUCCESS, null);
-    }
+    public OutcomeEvaluation evaluate(List<MemberTrace> members, int maxDecidingValueLength) { ... }
 }
+
+/** What compaction knows about one member trace; stepLabels is an immutable copy. */
+public record MemberTrace(TraceId traceId, Instant startTime, int errorCount, String outcomeValue /* or null */,
+                          Set<String> stepLabels) { ... }
+
+public record OutcomeEvaluation(OperationOutcome outcome, String decidingValue /* or null */) {}
 ```
 
 IdP example: `idp.login` has the rule `{"finalStepLabel":"token-exchange"}` (no `outcomeKey`, because the IdP services do not emit an outcome attribute). Operation `0193a6f2…` has T1 (`authentication`), T2 (`authentication`, `token-exchange`) and T3 (`token-exchange`), all with `error_count = 0`. Rule 1 is skipped, rule 2 does not fire, rule 3 finds `token-exchange` reached: **SUCCESS**. A login abandoned after the SMS step (T1, T2 without the code key, no T3) would be **INCOMPLETE**; one whose `idp-otp-service` span failed would be **FAILED**.
@@ -1758,93 +1691,59 @@ The roles mean the following:
   An alias observed *before* any primary value still creates a provisional operation with `display_value = NULL`, so the result does not depend on arrival order. The provisional operation is merged later (UC-10).
 - **step_label** names the business step evidenced by the key, e.g. `authentication` for the session key and `token-exchange` for the code. The timeline shows the label of the key that linked each trace.
 - **merge_window** (default `1 day`). An observation can join an existing operation only if its `observed_at` lies within `[first_seen - window, last_seen + window]` of that operation. Otherwise the value is treated as **reused** (e.g. a recycled session id the next day). A new operation is created and `correlation_value` is repointed to it.
-- **Hub guard.** An operation stops absorbing merges once `trace_count` reaches `tc.correlation.max-traces-per-operation` (default 10 000). This protects against keys misconfigured as correlation keys, e.g. `client_id`, which would otherwise glue millions of traces together. The event is logged and counted (`tc_correlation_hub_blocked_total`).
+- **Size limit.** A merge is refused when the merged operation would hold more than `OperationMergePolicy.maxTracesPerOperation` traces (configured; default 10 000). This protects against keys misconfigured as correlation keys, e.g. `client_id`, which would otherwise glue millions of traces together. The trace that would have caused the merge is left unlinked and the refusal is reported (`RefusedMerge`, metric `tc_correlation_merge_refused_total`). The limit guards merges only: one operation may still grow beyond it by extension.
 
-A single attribute key may belong to several correlation types (`UNIQUE (correlation_type_id, key_id)` only).
+A single attribute key may belong to several business operation definitions (`UNIQUE (operation_definition_id, key_id)` only).
 
 ### 4.11 CorrelationObservation, CorrelationValue, BusinessOperation
 
 ```java
 package ru.aasmc.tracing.collector.domain.correlation;
 
-import java.time.Instant;
-import java.util.UUID;
-import ru.aasmc.tracing.collector.domain.attribute.AttributeOrigin;
-import ru.aasmc.tracing.collector.domain.trace.TraceId;
+/** "trace T carried value V at time t": a row of tc.trace_correlation (append-only). Value length: CorrelationLimits. */
+public record CorrelationObservation(Instant observedAt, int operationDefinitionId, int correlationKeyId,
+                                     String value, TraceId traceId) { ... }
 
-/** Row of tc.trace_correlation (append-only). observed_at = span start (SPAN/RESOURCE) or Kafka ts (ENRICHMENT). */
-public record CorrelationObservation(long id, Instant observedAt, int correlationTypeId, int correlationKeyId,
-                                     String value, TraceId traceId, AttributeOrigin origin) {
-    public static final int MAX_VALUE_LENGTH = 512;
-    public CorrelationObservation {
-        if (value == null || value.isBlank() || value.length() > MAX_VALUE_LENGTH)
-            throw new IllegalArgumentException("correlation value must be 1..512 chars");
-    }
-}
-
-/** Row of tc.correlation_value: current owner of a (type, value). */
-public record CorrelationValue(int correlationTypeId, String value, UUID operationId, Instant operationFirstSeen,
-                               Instant updatedAt) {}
-
-/** Row of tc.business_operation. id = uuidv7() (time-ordered). */
-public record BusinessOperation(UUID id, Instant firstSeen, Instant lastSeen, int correlationTypeId,
+/**
+ * Row of tc.business_operation. Rules (INVALID_BUSINESS_OPERATION): id is a version-7 UUID; firstSeen <= lastSeen;
+ * traceCount >= 0; never merged into itself. displayValue null = provisional.
+ */
+public record BusinessOperation(UUID id, Instant firstSeen, Instant lastSeen, int operationDefinitionId,
                                 String displayValue, int traceCount, UUID mergedInto) {
-    public BusinessOperation {
-        if (id == null || id.version() != 7) throw new IllegalArgumentException("operation id must be uuidv7");
-        if (lastSeen.isBefore(firstSeen)) throw new IllegalArgumentException("lastSeen < firstSeen");
-        if (traceCount < 0) throw new IllegalArgumentException("traceCount");
-        if (id.equals(mergedInto)) throw new IllegalArgumentException("cannot merge into itself");
-    }
-
-    public boolean isMerged() { return mergedInto != null; }
-
-    public boolean accepts(Instant observedAt, java.time.Duration window) {
-        return !observedAt.isBefore(firstSeen.minus(window)) && !observedAt.isAfter(lastSeen.plus(window));
-    }
-
-    public BusinessOperation observe(Instant observedAt, String primaryValueOrNull) {
-        return new BusinessOperation(id,
-                observedAt.isBefore(firstSeen) ? observedAt : firstSeen,
-                observedAt.isAfter(lastSeen) ? observedAt : lastSeen,
-                correlationTypeId,
-                displayValue != null ? displayValue : primaryValueOrNull,
-                traceCount, mergedInto);
-    }
-
-    /**
-     * Survivor rule (deterministic, order-independent):
-     * 1) an operation WITH a display value (has seen a PRIMARY key) beats a provisional one;
-     * 2) otherwise the earlier firstSeen; 3) otherwise the smaller id.
-     */
-    public static BusinessOperation survivor(BusinessOperation a, BusinessOperation b) {
-        if ((a.displayValue != null) != (b.displayValue != null)) return a.displayValue != null ? a : b;
-        int c = a.firstSeen.compareTo(b.firstSeen);
-        if (c != 0) return c < 0 ? a : b;
-        return a.id.compareTo(b.id) <= 0 ? a : b;
-    }
-
-    public BusinessOperation mergedInto(UUID survivorId) {
-        return new BusinessOperation(id, firstSeen, lastSeen, correlationTypeId, displayValue, traceCount, survivorId);
-    }
+    public BusinessOperation includeObservation(Instant observedAt, String primaryValueOrNull) { ... }
+    public BusinessOperation withTraceCount(int traceCount) { ... }
+    public BusinessOperation markMergedInto(UUID survivorId) { ... }
 }
+
+/**
+ * survivor: named beats provisional, then earlier firstSeen, then the smaller id compared as unsigned numbers
+ * (the order PostgreSQL gives uuid; Java's UUID.compareTo is signed and would disagree).
+ * canJoin: observedAt in [firstSeen - window, lastSeen + window]. allowsMerge: combinedTraceCount <= the limit.
+ */
+public record OperationMergePolicy(int maxTracesPerOperation) { ... }
+
+/** Stateless: link(LinkingInput) -> LinkingResult; see below. */
+public final class OperationLinker { ... }
 ```
 
-**OperationForest: union-find.** `CorrelationResolver` in `tc-maintenance` runs every 10 s under ShedLock, so only one leader writes. Each tick it:
+**OperationLinker: linking traces one at a time.** `CorrelationResolver` in `tc-maintenance` runs every 10 s under ShedLock, so only one leader writes. Each tick, per business operation definition, it:
 
 1. Reads `trace_correlation WHERE id > :watermark ORDER BY id LIMIT 10 000`.
-2. Loads the `correlation_value` rows and operations they touch, plus, for each trace in the batch, the other observations of the same trace and type (index `(trace_id)`). That makes the "value–trace–value" edges visible.
-3. Builds an in-memory disjoint-set forest whose nodes are `(type, value)` and whose edges are "occur on the same trace". It applies union by survivor rank (rule above) and path compression.
-4. Persists the result:
-   - each new component gets a new operation (`uuidv7()`);
-   - components spanning several existing operations are **merged**: the losers get `merged_into = survivor.id`, and every `correlation_value` pointing at a loser is repointed to the survivor. Any loser that was itself a survivor of earlier merges gets its children repointed too, so the persisted forest always has **depth ≤ 1**;
-   - `trace_count` of every touched survivor is recomputed exactly as `count(DISTINCT trace_id)` over its values.
+2. Loads the `LinkingInput`: the new observations, the earlier observations of the same traces (index `(trace_id)`), and the current live operation of every value involved (`correlation_value` joined to `business_operation`).
+3. Calls `OperationLinker.link`. It links the traces of the batch one at a time, in the order of their earliest new observation (ties by value, then trace id), exactly as if each trace came in a run of its own, on a working copy of the input. For each trace:
+   - a value **keeps** its current operation if the trace carried it within that operation's merge window; a value outside the window that the trace carries for the first time is **reused** and starts a new operation; a value outside the window that the trace already carried in an earlier run was **reused since** by another operation and is left out, so a late fragment of an old trace never takes a value away from the operation that uses it now;
+   - no operation kept: create one; one: extend it; several: merge them into the survivor unless the merged operation would exceed the size limit (then the trace changes nothing and the refusal is reported);
+   - the trace's values are mapped to the resulting operation; `trace_count` grows by 1 unless an earlier observation of the trace already links it to one of the operations, so a replay does not inflate it.
+4. Persists the `LinkingResult` in one transaction: created operations, updated operations, operations marked `merged_into = survivor` (an operation created and merged in the same run is never written), changed `correlation_value` rows, and every other `correlation_value` of a merged operation repointed to its survivor, so the persisted forest always has **depth ≤ 1**.
 5. Advances `correlation_resolver_state.last_processed_id` in the same transaction.
+
+Storage keeps only the current operation of each value. So when a value was reused and a late fragment of an old trace arrives, the fragment's new values form a separate operation instead of joining the old one (an accepted limitation).
 
 Invariants of the BusinessOperation aggregate:
 
 - **I1.** A `correlation_value` row always points at a root operation (`merged_into IS NULL`).
 - **I2.** A merged operation is never un-merged. The API resolves a merged id to its survivor (HTTP 200 with `mergedFrom`).
-- **I3.** All values in one operation belong to the same correlation type. Different types never merge, so an `idp.login` operation and a `payment.checkout` operation stay separate even if they share traces.
+- **I3.** All values in one operation belong to the same business operation definition. Different types never merge, so an `idp.login` operation and a `payment.checkout` operation stay separate even if they share traces.
 - **I4.** `first_seen ≤ last_seen`, and both lie inside the union of the observations' `observed_at`.
 - **I5.** The resolver is idempotent. Re-processing a row already applied changes nothing, which is what makes the gap-tolerant watermark safe.
 
@@ -1859,7 +1758,7 @@ stateDiagram-v2
     OPEN --> OPEN : new trace joins (trace_count++, last_seen advances)
     OPEN --> MERGED : loses survivor rule against another operation
     OPEN --> CAPPED : trace_count reaches max-traces-per-operation
-    CAPPED --> CAPPED : further merges refused (metric)
+    CAPPED --> CAPPED : merges that would exceed the limit refused (metric)
     OPEN --> DIGESTED : last_seen < now - n days and all member trace days DONE (BusinessOperationCompacted)
     CAPPED --> DIGESTED : same rule
     PROVISIONAL --> DIGESTED : same rule (display_value stays NULL)
@@ -2068,7 +1967,7 @@ public record DigestStep(String stepLabel, TraceId traceId, Instant startTime, d
  * Row of tc.business_operation_digest (PARTITION BY RANGE (op_day), daily, retention n + m; op_day = first_seen::date UTC).
  * Only ROOT operations are digested (merged_into IS NULL); their id is the full-tier operation id, so links survive.
  */
-public record BusinessOperationDigest(LocalDate opDay, UUID operationId, int correlationTypeId, String displayValue,
+public record BusinessOperationDigest(LocalDate opDay, UUID operationId, int operationDefinitionId, String displayValue,
                                       Instant firstSeen, Instant lastSeen, int traceCount,
                                       OperationOutcome outcome, String outcomeDetail, List<DigestStep> steps,
                                       Map<String, List<String>> attributes, Instant compactedAt) {
@@ -2083,11 +1982,11 @@ public record BusinessOperationDigest(LocalDate opDay, UUID operationId, int cor
 }
 ```
 
-**Step label of a member trace.** A trace linked by several keys (T2 is linked by `idp.auth_session_id` and `oauth.authorization_code`) gets the label of the key declared **last** in the correlation type (keys are declared in business order), so T2's step is `token-exchange`. The outcome rule still sees all labels of a trace (`MemberTrace.stepLabels`).
+**Step label of a member trace.** A trace linked by several keys (T2 is linked by `idp.auth_session_id` and `oauth.authorization_code`) gets the label of the key declared **last** in the business operation definition (keys are declared in business order), so T2's step is `token-exchange`. The outcome rule still sees all labels of a trace (`MemberTrace.stepLabels`).
 
 **Built-ins vs retained keys.** Root service, root span name, duration, span/error counts, `service_ids` and `business_operation_id` are always columns. Only keys flagged `retain_in_digest` go into `attributes`. Keys not flagged are lost after n days; this trade-off is stated in ADR-13 (02).
 
-#### 4.14.3 CompactionExclusion and CompactionState
+#### 4.14.3 CompactionExclusion and DigestProgress
 
 ```java
 package ru.aasmc.tracing.collector.domain.digest;
@@ -2106,41 +2005,30 @@ public record CompactionExclusion(int id, String serviceName /* null = any servi
     }
 }
 
-public enum CompactionStatus { PENDING, RUNNING, DONE, FAILED }
+public enum DigestStatus { PENDING, RUNNING, DONE, FAILED }   // PENDING -> RUNNING -> DONE; RUNNING -> FAILED -> RUNNING
 
-/** Row of tc.compaction_state; written only by the DigestCompactor leader (ShedLock digest-compactor). */
-public record CompactionState(LocalDate traceDay, CompactionStatus status, Instant lastChunkEnd,
-                              long tracesDigested, long tracesExcluded, long operationsDigested,
-                              Instant startedAt, Instant finishedAt, String error) {
+/**
+ * Row of tc.compaction_state; written only by the DigestCompactor leader (ShedLock digest-compactor).
+ * Rules: tracesDigested >= 0; digestedUntil lies within the day; finishedAt only when DONE, failureReason only when FAILED.
+ */
+public record DigestProgress(LocalDate traceDay, DigestStatus status, Instant digestedUntil, long tracesDigested,
+                             Instant startedAt, Instant finishedAt, String failureReason) {
 
-    /** Eligible when the whole day is older than n days: D + 1 day <= now - n days (fullDays from RetentionTiers). */
-    public static boolean eligible(LocalDate day, Instant now, int fullDays) {
-        Instant dayEnd = day.plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC).toInstant();
-        return !dayEnd.isAfter(now.minus(java.time.Duration.ofDays(fullDays)));
-    }
+    public static DigestProgress pending(LocalDate traceDay) { ... }
 
-    public CompactionState start(Instant now) {
-        return switch (status) {
-            case PENDING, FAILED -> new CompactionState(traceDay, CompactionStatus.RUNNING, lastChunkEnd,
-                    tracesDigested, tracesExcluded, operationsDigested, now, null, null);
-            case RUNNING -> this;   // resumed by a new leader from lastChunkEnd
-            case DONE -> throw new IllegalStateException("day already compacted");
-        };
-    }
-    public CompactionState chunkDone(Instant chunkEnd, long digested, long excluded) {
-        if (status != CompactionStatus.RUNNING) throw new IllegalStateException("not running");
-        return new CompactionState(traceDay, status, chunkEnd, tracesDigested + digested, tracesExcluded + excluded,
-                operationsDigested, startedAt, null, null);
-    }
-    public CompactionState done(Instant now) {
-        if (status != CompactionStatus.RUNNING) throw new IllegalStateException("not running");
-        return new CompactionState(traceDay, CompactionStatus.DONE, lastChunkEnd, tracesDigested, tracesExcluded,
-                operationsDigested, startedAt, now, null);
-    }
-    public CompactionState failed(String error) {
-        return new CompactionState(traceDay, CompactionStatus.FAILED, lastChunkEnd, tracesDigested, tracesExcluded,
-                operationsDigested, startedAt, null, error);
-    }
+    /** chunkLength (configured) from digestedUntil or midnight, cut at the end of the day; empty when all is done. */
+    public Optional<TimeRange> nextChunk(Duration chunkLength) { ... }
+
+    /** PENDING or FAILED -> RUNNING, or a new leader takes over a RUNNING day; keeps the chunks, startedAt = now. */
+    public DigestProgress startOrResume(Instant now) { ... }
+
+    /** Only while RUNNING; chunkEnd lies after the previous chunk's end and traces >= 0: progress only moves forward. */
+    public DigestProgress chunkDigested(Instant chunkEnd, long traces) { ... }
+
+    /** RUNNING -> DONE, only when digestedUntil is the end of the day: DONE opens the drop gate. */
+    public DigestProgress finish(Instant now) { ... }
+
+    public DigestProgress fail(String reason) { ... }
 }
 ```
 
@@ -2149,7 +2037,8 @@ stateDiagram-v2
     [*] --> PENDING : row inserted when trace day D becomes eligible (D + 1 day <= now - n days)
     PENDING --> RUNNING : DigestCompactor tick acquires lock digest-compactor
     RUNNING --> RUNNING : 1-hour chunk committed (last_chunk_end advances)
-    RUNNING --> DONE : last chunk of D committed (TraceDayCompacted)
+    RUNNING --> RUNNING : a new leader takes over (startedAt = now, chunks kept)
+    RUNNING --> DONE : last chunk of D committed (TraceDayCompacted); refused before that
     RUNNING --> FAILED : chunk statement fails or times out (statement_timeout 15 min)
     FAILED --> RUNNING : next tick retries from last_chunk_end
     DONE --> [*] : row kept; drop gate reads it until the FULL partitions of D are gone
@@ -2200,7 +2089,7 @@ classDiagram
     class BusinessOperationDigest {
         +LocalDate opDay
         +UUID operationId
-        +int correlationTypeId
+        +int operationDefinitionId
         +String displayValue
         +Instant firstSeen
         +Instant lastSeen
@@ -2229,13 +2118,14 @@ classDiagram
         FAILED
         INCOMPLETE
     }
-    class CompactionState {
+    class DigestProgress {
         +LocalDate traceDay
-        +CompactionStatus status
-        +Instant lastChunkEnd
+        +DigestStatus status
+        +Instant digestedUntil
         +long tracesDigested
-        +long tracesExcluded
-        +long operationsDigested
+        +Instant startedAt
+        +Instant finishedAt
+        +String failureReason
     }
     class CompactionExclusion {
         +int id
@@ -2261,7 +2151,7 @@ classDiagram
     BusinessOperationDigest *-- "1..*" DigestStep
     BusinessOperationDigest --> OperationOutcome
     OutcomeRule ..> OperationOutcome : produces
-    CompactionState ..> TraceDigest : tracks trace day
+    DigestProgress ..> TraceDigest : tracks trace day
     CompactionExclusion ..> TraceDigest : filters
 ```
 
@@ -2410,11 +2300,11 @@ Written by `DigestCompactor` (§4.14). Wire fields reach the digest only through
 |---|---|---|
 | `trace_digest.trace_day`, `trace_id`, `start_time`, `duration_ns`, `root_service_id`, `root_name_id`, `span_count`, `error_count`, `service_ids` | `trace_summary` (same columns) | Copied 1:1 per `(trace_id, trace_day)` row of chunk `[h, h + 1 h)` of day D. |
 | `trace_digest.outcome` | `trace_summary.error_count` | 1 = OK (`error_count = 0`), 2 = ERROR. |
-| `trace_digest.business_operation_id` | `trace_correlation` → `correlation_value` → `business_operation` (following `merged_into` to the root) | NULL if the trace belongs to no operation. If it belongs to several types, the operation of the lowest `correlation_type_id` is stored (the others still list the trace in their `steps`). |
+| `trace_digest.business_operation_id` | `trace_correlation` → `correlation_value` → `business_operation` (following `merged_into` to the root) | NULL if the trace belongs to no operation. If it belongs to several types, the operation of the lowest `operation_definition_id` is stored (the others still list the trace in their `steps`). |
 | `trace_digest.attributes` | `trace_attribute` rows of keys with `retain_in_digest = true`, `ts` in `[D − 1 h, D + 1 day + 6 h)` | `jsonb_object_agg(key, array of DISTINCT transformed value_str)`; transform per `digest_transform`. `'{}'` if none. |
 | (filter) | `compaction_exclusion` vs root service / root name | Excluded unless `business_operation_id IS NOT NULL`. |
 | `trace_digest.compacted_at` | `now()` | — |
-| `business_operation_digest.operation_id`, `correlation_type_id`, `display_value`, `first_seen`, `last_seen`, `trace_count` | `business_operation` (root) | `op_day = first_seen::date` (UTC). |
+| `business_operation_digest.operation_id`, `operation_definition_id`, `display_value`, `first_seen`, `last_seen`, `trace_count` | `business_operation` (root) | `op_day = first_seen::date` (UTC). |
 | `business_operation_digest.outcome`, `outcome_detail` | `OutcomeRule.evaluate` over member `trace_digest` rows + `trace_attribute(outcomeKey)` + linking `correlation_key.step_label` | Order of §4.10.1. |
 | `business_operation_digest.steps` | member `trace_digest` rows ordered by `start_time`, step label from `correlation_key` | `[{"stepLabel","traceId","startTime","durationMs","outcome"}]`. |
 | `business_operation_digest.attributes` | union of members' `trace_digest.attributes` | jsonb union, distinct values per key. |

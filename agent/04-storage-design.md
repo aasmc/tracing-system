@@ -74,6 +74,8 @@ PG 18 and 17 features this design relies on:
 7. **Logical, not enforced, relationships between data tables.** Foreign keys are enforced only between the small, unpartitioned configuration and dictionary tables. Partitioned data tables reference each other logically (see [08-er-diagrams.md](08-er-diagrams.md)), because:
    - an enforced FK would add an index probe per inserted row;
    - it would also prevent independent per-table retention drops.
+
+
 8. **Idempotent writes.** Kafka is the write-ahead log (ADR-02). Every insert is replay-safe:
    - `ON CONFLICT DO NOTHING` on the natural key;
    - derived rows are written only for rows that were actually inserted;
@@ -87,6 +89,7 @@ PG 18 and 17 features this design relies on:
     - **Never drop uncompacted data:** a FULL-tier partition is dropped only after every trace day it can contribute to is compacted (drop gate, §8.7).
     - The digest is write-once, so a GIN index (`jsonb_path_ops`) on the digest `attributes` is acceptable there. Principle 6 (no GIN on live spans, ADR-05) still holds for the FULL tier.
     - Only keys flagged `indexed_attribute.retain_in_digest` survive into the digest, optionally transformed (`digest_transform` SHA256 or MASK). Flagging a key later is not retroactive.
+11. **Limits are configuration, not schema.** `CHECK` constraints enforce only rules that never change: non-empty values, enum values, time order, non-negative counters. Sizes, counts, lengths and time windows (name and key lengths, attribute value size, index value size, correlation value length, merge-window bounds) are configured limits enforced by the application (`IngestLimits`, `AttributeLimits`, `EnrichmentLimits`, `CorrelationLimits`), so an operator can raise them without a migration. The application validates configured limits at startup against physical ceilings, e.g. a B-tree index entry is at most about 2,700 bytes, so `maxIndexValueBytes` must stay below it.
 
 ---
 
@@ -137,7 +140,7 @@ Master changelog `db/changelog/db.changelog-master.yaml` includes, in this order
 | `002-partitioned-data-tables.sql` | Partitioned parents and parent-level indexes |
 | `003-seed.sql` | Seed rows: retention defaults, singleton rows, built-in indexed attributes |
 | `004-grants.sql` | Privileges for the application roles (changeset `runOnChange:true`, so edited grants are re-applied) |
-| `005-two-tier-retention.sql` | ADR-13: new columns on `indexed_attribute`, `correlation_type`, `retention_policy`; the DIGEST-tier tables `trace_digest`, `business_operation_digest`; `compaction_exclusion`, `compaction_state`; retention re-seed; grants (§4.7) |
+| `005-two-tier-retention.sql` | ADR-13: new columns on `indexed_attribute`, `business_operation_definition`, `retention_policy`; the DIGEST-tier tables `trace_digest`, `business_operation_digest`; `compaction_exclusion`, `compaction_state`; retention re-seed; grants (§4.7) |
 
 **Partitions are not created by Liquibase.**
 - `tc-maintenance` (PartitionManager) creates partitions on start and every 10 minutes (§8).
@@ -225,7 +228,7 @@ CREATE TABLE tc.enrichment_source (
     updated_at       timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT enrichment_source_name_uk   UNIQUE (name),
     -- name becomes part of the consumer group id "tc-enricher.<sourceName>"
-    CONSTRAINT enrichment_source_name_ck   CHECK (name ~ '^[a-z0-9][a-z0-9._-]{0,62}$'),
+    CONSTRAINT enrichment_source_name_ck   CHECK (name ~ '^[a-z0-9][a-z0-9._-]{2,}$'),  -- max length: configured (EnrichmentLimits)
     CONSTRAINT enrichment_source_topic_ck  CHECK (topic ~ '^[A-Za-z0-9._-]{1,249}$'),
     CONSTRAINT enrichment_source_status_ck CHECK (status IN ('DRAFT','ACTIVE','PAUSED','DELETED')),
     CONSTRAINT enrichment_source_rev_ck    CHECK (status IN ('DRAFT','DELETED')
@@ -263,7 +266,7 @@ CREATE TABLE tc.attribute_key (
     value_type text        NOT NULL,
     first_seen timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT attribute_key_key_uk  UNIQUE (key),
-    CONSTRAINT attribute_key_len_ck  CHECK (octet_length(key) BETWEEN 1 AND 255),
+    CONSTRAINT attribute_key_len_ck  CHECK (octet_length(key) >= 1),  -- max length: configured (AttributeLimits)
     CONSTRAINT attribute_key_type_ck CHECK (value_type IN
         ('STRING','BOOLEAN','LONG','DOUBLE',
          'STRING_ARRAY','BOOLEAN_ARRAY','LONG_ARRAY','DOUBLE_ARRAY','MIXED'))
@@ -282,26 +285,25 @@ CREATE TABLE tc.indexed_attribute (
     CONSTRAINT indexed_attribute_status_ck CHECK (status IN ('BACKFILLING','ACTIVE','DISABLED'))
 );
 
-CREATE TABLE tc.correlation_type (
+CREATE TABLE tc.business_operation_definition (
     id           int      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name         text     NOT NULL,
     description  text     NULL,
     merge_window interval NOT NULL DEFAULT '1 day',
     status       text     NOT NULL DEFAULT 'ACTIVE',
-    CONSTRAINT correlation_type_name_uk   UNIQUE (name),
-    CONSTRAINT correlation_type_window_ck CHECK (merge_window > interval '0'
-                                                 AND merge_window <= interval '30 days'),
-    CONSTRAINT correlation_type_status_ck CHECK (status IN ('ACTIVE','DISABLED'))
+    CONSTRAINT business_operation_definition_name_uk   UNIQUE (name),
+    CONSTRAINT business_operation_definition_window_ck CHECK (merge_window > interval '0'),  -- bounds: configured (CorrelationLimits)
+    CONSTRAINT business_operation_definition_status_ck CHECK (status IN ('ACTIVE','DISABLED'))
 );
 
 CREATE TABLE tc.correlation_key (
     id                  int  GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    correlation_type_id int  NOT NULL REFERENCES tc.correlation_type (id),
+    operation_definition_id int  NOT NULL REFERENCES tc.business_operation_definition (id),
     key_id              int  NOT NULL REFERENCES tc.attribute_key (id),
     role                text NOT NULL,
     step_label          text NULL,
     CONSTRAINT correlation_key_role_ck    CHECK (role IN ('PRIMARY','ALIAS')),
-    CONSTRAINT correlation_key_type_key_uk UNIQUE (correlation_type_id, key_id)
+    CONSTRAINT correlation_key_type_key_uk UNIQUE (operation_definition_id, key_id)
 );
 CREATE INDEX correlation_key_key_idx ON tc.correlation_key (key_id);
 
@@ -330,7 +332,7 @@ CREATE TABLE tc.service (
     name       text        COLLATE "C" NOT NULL,
     first_seen timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT service_name_uk UNIQUE (name),
-    CONSTRAINT service_name_ck CHECK (octet_length(name) BETWEEN 1 AND 255)
+    CONSTRAINT service_name_ck CHECK (octet_length(name) >= 1)  -- max length: configured attribute value size
 );
 
 CREATE TABLE tc.span_name (
@@ -338,7 +340,7 @@ CREATE TABLE tc.span_name (
     service_id int  NOT NULL REFERENCES tc.service (id),
     name       text COLLATE "C" NOT NULL,
     CONSTRAINT span_name_service_name_uk UNIQUE (service_id, name),
-    CONSTRAINT span_name_len_ck CHECK (octet_length(name) BETWEEN 1 AND 1024)
+    CONSTRAINT span_name_len_ck CHECK (octet_length(name) >= 1)  -- dictionary threshold: configured
 );
 
 -- id = xxHash64 (seed 0) of canonical resource: schemaUrl + sorted (key,type,value) triples,
@@ -365,12 +367,12 @@ CREATE TABLE tc.instrumentation_scope (
 -- Correlation map (unpartitioned; maintained by the resolver only)
 ------------------------------------------------------------------------
 CREATE TABLE tc.correlation_value (
-    correlation_type_id  int         NOT NULL REFERENCES tc.correlation_type (id),
+    operation_definition_id  int         NOT NULL REFERENCES tc.business_operation_definition (id),
     value                text        COLLATE "C" NOT NULL,
     operation_id         uuid        NOT NULL,          -- logical ref -> business_operation(id, first_seen)
     operation_first_seen timestamptz NOT NULL,          -- partition key of the referenced op (pruning)
     updated_at           timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT correlation_value_pk PRIMARY KEY (correlation_type_id, value)
+    CONSTRAINT correlation_value_pk PRIMARY KEY (operation_definition_id, value)
 ) WITH (fillfactor = 85);
 CREATE INDEX correlation_value_operation_idx ON tc.correlation_value (operation_id);
 
@@ -493,9 +495,8 @@ CREATE TABLE tc.trace_attribute (
     trace_id  uuid             NOT NULL,
     key_id    int              NOT NULL,     -- logical -> attribute_key.id
     origin    smallint         NOT NULL,     -- 1 SPAN, 2 RESOURCE, 3 ENRICHMENT, 4 DERIVED
-    value_str text             COLLATE "C" NOT NULL,   -- canonical text, max 512 bytes
-    CONSTRAINT trace_attribute_origin_ck CHECK (origin BETWEEN 1 AND 4),
-    CONSTRAINT trace_attribute_len_ck    CHECK (octet_length(value_str) <= 512)
+    value_str text             COLLATE "C" NOT NULL,   -- canonical text, cut to IngestLimits.maxIndexValueBytes
+    CONSTRAINT trace_attribute_origin_ck CHECK (origin BETWEEN 1 AND 4)
 ) PARTITION BY RANGE (ts);
 CREATE INDEX trace_attribute_kv_ts_idx
     ON tc.trace_attribute (key_id, value_str, ts DESC) INCLUDE (trace_id);
@@ -543,15 +544,14 @@ CREATE TABLE tc.trace_correlation (
     id                  bigint      GENERATED ALWAYS AS IDENTITY,
     observed_at         timestamptz NOT NULL,  -- span start (origin 1/2) or Kafka ts (origin 3)
     trace_id            uuid        NOT NULL,
-    correlation_type_id int         NOT NULL,  -- logical -> correlation_type.id
+    operation_definition_id int         NOT NULL,  -- logical -> business_operation_definition.id
     correlation_key_id  int         NOT NULL,  -- logical -> correlation_key.id
     origin              smallint    NOT NULL,
     value               text        COLLATE "C" NOT NULL,
-    CONSTRAINT trace_correlation_origin_ck CHECK (origin BETWEEN 1 AND 4),
-    CONSTRAINT trace_correlation_len_ck    CHECK (octet_length(value) <= 512)
+    CONSTRAINT trace_correlation_origin_ck CHECK (origin BETWEEN 1 AND 4)  -- value length: configured (CorrelationLimits)
 ) PARTITION BY RANGE (observed_at);
-CREATE INDEX trace_correlation_type_value_idx
-    ON tc.trace_correlation (correlation_type_id, value) INCLUDE (trace_id);
+CREATE INDEX trace_correlation_definition_value_idx
+    ON tc.trace_correlation (operation_definition_id, value) INCLUDE (trace_id);
 CREATE INDEX trace_correlation_trace_idx ON tc.trace_correlation (trace_id);
 CREATE INDEX trace_correlation_id_idx    ON tc.trace_correlation (id);
 
@@ -563,7 +563,7 @@ CREATE TABLE tc.business_operation (
     first_seen          timestamptz NOT NULL,   -- immutable (partition key)
     last_seen           timestamptz NOT NULL,
     merged_into         uuid        NULL,       -- survivor id after a merge (UC-10)
-    correlation_type_id int         NOT NULL,   -- logical -> correlation_type.id
+    operation_definition_id int         NOT NULL,   -- logical -> business_operation_definition.id
     trace_count         int         NOT NULL DEFAULT 0,
     display_value       text        NOT NULL,
     CONSTRAINT business_operation_pk       PRIMARY KEY (id, first_seen),
@@ -572,7 +572,7 @@ CREATE TABLE tc.business_operation (
     CONSTRAINT business_operation_count_ck CHECK (trace_count >= 0)
 ) PARTITION BY RANGE (first_seen);
 CREATE INDEX business_operation_type_first_seen_idx
-    ON tc.business_operation (correlation_type_id, first_seen DESC);
+    ON tc.business_operation (operation_definition_id, first_seen DESC);
 ```
 
 Notes on the DDL:
@@ -678,11 +678,11 @@ ALTER TABLE tc.indexed_attribute
     ADD COLUMN digest_transform text    NOT NULL DEFAULT 'NONE',  -- applied when the value is digested
     ADD CONSTRAINT indexed_attribute_transform_ck CHECK (digest_transform IN ('NONE','SHA256','MASK'));
 
-ALTER TABLE tc.correlation_type
+ALTER TABLE tc.business_operation_definition
     ADD COLUMN outcome_rule jsonb NULL,
     -- {"outcomeKey":"business.outcome","successValues":["SUCCESS"],
     --  "failureValues":["FAILED","DENIED"],"finalStepLabel":"token-exchange"}   (all fields optional)
-    ADD CONSTRAINT correlation_type_outcome_rule_ck CHECK (
+    ADD CONSTRAINT business_operation_definition_outcome_rule_ck CHECK (
         outcome_rule IS NULL OR (
             jsonb_typeof(outcome_rule) = 'object'
             AND (NOT outcome_rule ? 'outcomeKey'     OR jsonb_typeof(outcome_rule -> 'outcomeKey')     = 'string')
@@ -711,7 +711,7 @@ CREATE TABLE tc.compaction_exclusion (
     created_by        text        NOT NULL,
     created_at        timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT compaction_exclusion_uk         UNIQUE NULLS NOT DISTINCT (service_name, root_name_pattern),
-    CONSTRAINT compaction_exclusion_pattern_ck CHECK (octet_length(root_name_pattern) BETWEEN 1 AND 1024)
+    CONSTRAINT compaction_exclusion_pattern_ck CHECK (octet_length(root_name_pattern) >= 1)  -- max length: configured
 );
 
 ------------------------------------------------------------------------
@@ -770,7 +770,7 @@ CREATE TABLE tc.business_operation_digest (
     compacted_at        timestamptz NOT NULL DEFAULT now(),
     operation_id        uuid        NOT NULL,   -- = business_operation.id (uuidv7, survivor only)
     op_day              date        NOT NULL,   -- = first_seen::date UTC (partition key)
-    correlation_type_id int         NOT NULL,   -- logical -> correlation_type.id
+    operation_definition_id int         NOT NULL,   -- logical -> business_operation_definition.id
     trace_count         int         NOT NULL,
     outcome             smallint    NOT NULL,   -- OperationOutcome: 0 UNKNOWN, 1 SUCCESS, 2 FAILED, 3 INCOMPLETE
     display_value       text        NOT NULL,
@@ -783,16 +783,16 @@ CREATE TABLE tc.business_operation_digest (
     CONSTRAINT business_operation_digest_day_ck     CHECK (op_day = (first_seen AT TIME ZONE 'UTC')::date),
     CONSTRAINT business_operation_digest_time_ck    CHECK (last_seen >= first_seen),
     CONSTRAINT business_operation_digest_outcome_ck CHECK (outcome BETWEEN 0 AND 3),
-    CONSTRAINT business_operation_digest_detail_ck  CHECK (octet_length(outcome_detail) <= 512),
+    -- outcome_detail is cut to CorrelationLimits.maxDecidingValueLength by the application
     CONSTRAINT business_operation_digest_steps_ck   CHECK (jsonb_typeof(steps) = 'array'),
     CONSTRAINT business_operation_digest_attrs_ck   CHECK (jsonb_typeof(attributes) = 'object')
 ) PARTITION BY RANGE (op_day);
 CREATE INDEX business_operation_digest_type_first_seen_idx
-    ON tc.business_operation_digest (correlation_type_id, first_seen DESC);
+    ON tc.business_operation_digest (operation_definition_id, first_seen DESC);
 CREATE INDEX business_operation_digest_type_value_idx
-    ON tc.business_operation_digest (correlation_type_id, display_value);
+    ON tc.business_operation_digest (operation_definition_id, display_value);
 CREATE INDEX business_operation_digest_type_outcome_idx
-    ON tc.business_operation_digest (correlation_type_id, outcome, first_seen DESC);
+    ON tc.business_operation_digest (operation_definition_id, outcome, first_seen DESC);
 CREATE INDEX business_operation_digest_attributes_gin
     ON tc.business_operation_digest USING gin (attributes jsonb_path_ops);
 
@@ -837,7 +837,7 @@ GRANT SELECT ON tc.compaction_exclusion TO tc_ingester, tc_enricher;      -- con
 GRANT SELECT, INSERT, UPDATE, DELETE ON tc.compaction_exclusion TO tc_admin;
 GRANT SELECT ON tc.compaction_state TO tc_admin;                          -- ops page: compaction lag
 GRANT EXECUTE ON FUNCTION tc.operation_root(uuid) TO tc_query;            -- read path (§7.7–§7.9)
--- tc_admin already has SELECT, INSERT, UPDATE on indexed_attribute, correlation_type and
+-- tc_admin already has SELECT, INSERT, UPDATE on indexed_attribute, business_operation_definition and
 -- retention_policy, which covers the new columns.
 -- tc_query: the 004 ALTER DEFAULT PRIVILEGES already grants SELECT on every new table
 -- (trace_digest, business_operation_digest, compaction_exclusion, compaction_state).
@@ -854,7 +854,7 @@ GRANT EXECUTE ON FUNCTION tc.operation_root(uuid) TO tc_query;            -- rea
 | `trace_digest` | DIGEST | 97 d | DAY | filled at about day n + 1, dropped at n + m |
 | `business_operation_digest` | DIGEST | 97 d | DAY | filled at about day n + 2, dropped at n + m |
 
-The control plane keeps the two tiers consistent. `PUT /api/v1/admin/retention-policies/tiers` with `{"fullDays":7,"digestDays":90}` sets `retention = fullDays` on every FULL row and `retention = fullDays + digestDays` on every DIGEST row, in one transaction with the `config_revision` bump. It validates `fullDays ≥ 2`, `fullDays > ceil(max(correlation_type.merge_window))` in days, and `digestDays ≥ 0`. `digestDays = 0` disables the DIGEST tier: DigestCompactor stops and the drop gate is skipped.
+The control plane keeps the two tiers consistent. `PUT /api/v1/admin/retention-policies/tiers` with `{"fullDays":7,"digestDays":90}` sets `retention = fullDays` on every FULL row and `retention = fullDays + digestDays` on every DIGEST row, in one transaction with the `config_revision` bump. It validates `fullDays ≥ 2`, `fullDays > ceil(max(business_operation_definition.merge_window))` in days, and `digestDays ≥ 0`. `digestDays = 0` disables the DIGEST tier: DigestCompactor stops and the drop gate is skipped.
 
 ---
 ## 5. Data encoding: from `TraceMessage` v1 to rows
@@ -970,9 +970,13 @@ The span name is resolved through `span_name (service_id, name)`. A service that
 ### 5.6 Resource and scope deduplication
 
 ```
-canonical(resource) = schemaUrl + '\u0000' + join('\u0001', sort_by_key(attrs).map(k + '\u0002' + type + '\u0002' + valueJson))
-resource.id         = xxHash64(utf8(canonical), seed=0)   as signed long
+text(s)             = utf8Length(s) + ':' + utf8(s)
+canonical(resource) = text(schemaUrl) + concat(sort_by_key(attrs).map(a ->
+                          text(a.key) + text(a.type) + a.tokens.size + ':' + concat(a.tokens.map(text))))
+resource.id         = xxHash64(canonical, seed=0)   as signed long
 ```
+
+Every text carries its length and every array its size, so two different contents never share an encoding (e.g. `[]` and `[""]`, or a value containing a separator character).
 
 The probability of a collision among n distinct resources is about n²/2^65. That is 2.7·10⁻¹⁰ for n = 100,000.
 
@@ -1071,7 +1075,7 @@ CREATE TEMP TABLE IF NOT EXISTS stg_link (
 ) ON COMMIT DELETE ROWS;
 CREATE TEMP TABLE IF NOT EXISTS stg_corr (
     trace_id uuid, span_id bigint, start_time timestamptz,
-    correlation_type_id int, correlation_key_id int, value text COLLATE "C", origin smallint
+    operation_definition_id int, correlation_key_id int, value text COLLATE "C", origin smallint
 ) ON COMMIT DELETE ROWS;
 ```
 
@@ -1160,8 +1164,8 @@ ins_link AS (
     RETURNING 1
 ),
 ins_corr AS (
-    INSERT INTO tc.trace_correlation (observed_at, trace_id, correlation_type_id, correlation_key_id, origin, value)
-    SELECT c.start_time, c.trace_id, c.correlation_type_id, c.correlation_key_id, c.origin, c.value
+    INSERT INTO tc.trace_correlation (observed_at, trace_id, operation_definition_id, correlation_key_id, origin, value)
+    SELECT c.start_time, c.trace_id, c.operation_definition_id, c.correlation_key_id, c.origin, c.value
     FROM stg_corr c
     JOIN ins_span i ON i.trace_id = c.trace_id AND i.span_id = c.span_id AND i.start_time = c.start_time
     RETURNING 1
@@ -1230,7 +1234,7 @@ ins_attr AS (
     FROM new_rows WHERE indexed
     RETURNING 1
 )
-INSERT INTO tc.trace_correlation (observed_at, trace_id, correlation_type_id, correlation_key_id, origin, value)
+INSERT INTO tc.trace_correlation (observed_at, trace_id, operation_definition_id, correlation_key_id, origin, value)
 SELECT observed_at, trace_id, corr_type_id, corr_key_id, 3, value_str
 FROM new_rows WHERE corr_type_id IS NOT NULL;
 ```
@@ -1249,7 +1253,7 @@ FROM new_rows WHERE corr_type_id IS NOT NULL;
 | `trace_attribute`, `span_link`, `trace_correlation` (ingester) | Joined to `ins_span`, so they are written only together with a new span. A partially duplicated batch writes derived rows only for its new spans. Duplicate attribute rows from *different* fragments of the same trace are tolerated and removed with `DISTINCT` at read time. |
 | `trace_enrichment` and its derived rows | `UNIQUE (source_id, kafka_partition, kafka_offset, key_id, observed_at)`. `observed_at` is the Kafka record timestamp, which is identical on replay. Derived rows come from `RETURNING` only. |
 | Dictionaries and resources | Insert-if-absent. |
-| Resolver | Idempotent union-find with a lagging watermark (§6.7). |
+| Resolver | Idempotent trace-by-trace linking with a lagging watermark (§6.7). |
 
 `ON CONFLICT DO NOTHING` also absorbs duplicates *within one statement*, for example two copies of the same fragment in one poll batch. `ON CONFLICT DO UPDATE` on `trace_summary` would raise "cannot affect row a second time", which is why `agg` groups by the conflict key. The Java side additionally deduplicates spans per batch, which is cheaper.
 
@@ -1265,42 +1269,42 @@ The fix:
 
 ```sql
 -- R1: new input (scans the (id) index of each retained daily partition; empty ranges cost one descent each)
-SELECT id, observed_at, trace_id, correlation_type_id, correlation_key_id, value
+SELECT id, observed_at, trace_id, operation_definition_id, correlation_key_id, value
 FROM tc.trace_correlation
 WHERE id > $watermark
 ORDER BY id
 LIMIT 20000;
 
 -- R2: other values already known for the same traces (aliases that arrived earlier)
-SELECT trace_id, correlation_type_id, value, min(observed_at) AS observed_at
+SELECT trace_id, operation_definition_id, value, min(observed_at) AS observed_at
 FROM tc.trace_correlation
 WHERE trace_id = ANY ($traces::uuid[])
-GROUP BY trace_id, correlation_type_id, value;
+GROUP BY trace_id, operation_definition_id, value;
 
 -- R3: existing operations for all values in the component candidates
-SELECT cv.correlation_type_id, cv.value, cv.operation_id, cv.operation_first_seen,
+SELECT cv.operation_definition_id, cv.value, cv.operation_id, cv.operation_first_seen,
        bo.last_seen, bo.merged_into
 FROM tc.correlation_value cv
 JOIN tc.business_operation bo
   ON bo.id = cv.operation_id AND bo.first_seen = cv.operation_first_seen   -- pruned to one partition
-WHERE (cv.correlation_type_id, cv.value) IN (SELECT * FROM unnest($types::int[], $values::text[]));
+WHERE (cv.operation_definition_id, cv.value) IN (SELECT * FROM unnest($types::int[], $values::text[]));
 ```
 
-**In-memory union-find, per correlation type:**
-- The nodes are values. Two values are joined when they occur in the same trace (from R1 and R2).
-- An existing operation (from R3) is attached to its values. A value whose operation has `last_seen < observed_at − merge_window` is treated as stale and starts a new operation. This handles session or code reuse.
-- For each component:
+**Linking in memory, per business operation definition** (`OperationLinker`, a stateless domain service):
+- The traces of the batch are linked one at a time, in the order of their earliest new observation, exactly as if each came in a run of its own.
+- A value keeps its operation (from R3) if the trace carried it within the operation's merge window. Outside the window the value is treated as reused and starts a new operation, unless the trace already carried it in an earlier run (from R2): then it was reused since and is left out. This handles session or code reuse.
+- For each trace:
   - **no operation:** create one;
   - **one operation:** attach to it;
-  - **several operations:** keep the survivor with the earliest `(first_seen, id)`, and set `merged_into = survivor` on the others (UC-10).
-- `trace_count` is increased by the number of traces in the component that were not yet attached through any pre-existing value. A replay therefore does not inflate it.
+  - **several operations:** keep the survivor (named first, then earliest `first_seen`, then smallest id), and set `merged_into = survivor` on the others (UC-10), unless the merged operation would exceed the configured size limit.
+- `trace_count` grows by 1 per trace that was not yet attached through any pre-existing value. A replay therefore does not inflate it.
 
 All writes go in one transaction. `SELECT … FOR UPDATE` on the state row serialises a second leader if ShedLock leases overlap:
 
 ```sql
 SELECT last_processed_id FROM tc.correlation_resolver_state WHERE id = 1 FOR UPDATE;
 
-INSERT INTO tc.business_operation (id, first_seen, last_seen, correlation_type_id, trace_count, display_value)
+INSERT INTO tc.business_operation (id, first_seen, last_seen, operation_definition_id, trace_count, display_value)
 SELECT * FROM unnest($ids::uuid[], $first::timestamptz[], $last::timestamptz[], $types::int[], $counts::int[], $display::text[]);
 -- ids are generated in Java as UUIDv7 or via SELECT uuidv7() so they are known before the insert
 
@@ -1316,9 +1320,9 @@ WHERE bo.id = u.id AND bo.first_seen = u.first_seen;
 -- path compression: anything that pointed at a loser now points at the survivor
 UPDATE tc.business_operation SET merged_into = $survivor WHERE merged_into = ANY ($losers::uuid[]);
 
-INSERT INTO tc.correlation_value AS cv (correlation_type_id, value, operation_id, operation_first_seen, updated_at)
+INSERT INTO tc.correlation_value AS cv (operation_definition_id, value, operation_id, operation_first_seen, updated_at)
 SELECT * , now() FROM unnest($vt::int[], $vv::text[], $vop::uuid[], $vfs::timestamptz[])
-ON CONFLICT (correlation_type_id, value) DO UPDATE
+ON CONFLICT (operation_definition_id, value) DO UPDATE
    SET operation_id = EXCLUDED.operation_id, operation_first_seen = EXCLUDED.operation_first_seen, updated_at = now()
    WHERE cv.operation_id IS DISTINCT FROM EXCLUDED.operation_id;
 UPDATE tc.correlation_value SET operation_id = $survivor, operation_first_seen = $survivor_fs, updated_at = now()
@@ -1407,10 +1411,10 @@ attr_json AS (
 op_raw AS (                                   -- first-observed business operation of the trace
     SELECT DISTINCT ON (c.trace_id) c.trace_id, cv.operation_id
     FROM tc.trace_correlation c
-    JOIN tc.correlation_value cv USING (correlation_type_id, value)
+    JOIN tc.correlation_value cv USING (operation_definition_id, value)
     WHERE c.observed_at >= $attr_from AND c.observed_at < $attr_to
       AND c.trace_id IN (SELECT trace_id FROM chunk)
-    ORDER BY c.trace_id, c.observed_at, c.correlation_type_id
+    ORDER BY c.trace_id, c.observed_at, c.operation_definition_id
 ),
 op AS (                                       -- resolved to the root survivor, once per distinct operation
     SELECT r.trace_id, roots.root_id AS business_operation_id
@@ -1465,7 +1469,7 @@ Notes on DC1:
 - **Plan.** `chunk` is a range on `trace_summary_start_idx` in one daily partition, about 3.6 M rows per hour at M. `attr` is an index-only scan of `trace_attribute_kv_ts_idx` (`key_id = ANY(…)`, `ts` checked in the index, `trace_id` from `INCLUDE`) over the 7–8 hourly partitions of the window, hash-semi-joined to `chunk`. `op` probes `trace_correlation_trace_idx`, or hash-joins the 1–2 pruned daily partitions; the planner decides. Pruning happens at plan time because every bound is a parameter and `tc_maintenance` uses custom plans.
 - **Transforms.** `SHA256` is `encode(sha256(convert_to(v,'UTF8')),'hex')` and `MASK` is the first 2 characters + `***`. tc-query-api applies the identical SHA-256 to search values (§7.8). A plain SHA-256 of a low-entropy id can be reversed by enumeration (§13.3), so for such keys prefer pseudonymous ids at the source.
 - **Root resolution.** `tc.operation_root()` (§4.7) is called once per distinct operation of the chunk, not once per trace. `correlation_value` already points at survivors after path compression, so the function normally returns its argument after one PK probe per retained month partition.
-- **One operation per trace.** If a trace belongs to operations of several correlation types, `trace_digest.business_operation_id` holds the one whose correlation row was observed first. `business_operation_digest.steps` still lists the trace under every operation (BO2).
+- **One operation per trace.** If a trace belongs to operations of several business operation definitions, `trace_digest.business_operation_id` holds the one whose correlation row was observed first. `business_operation_digest.steps` still lists the trace under every operation (BO2).
 - **Exclusions.** A trace is excluded only if its root span name matches a `compaction_exclusion` row **and** it belongs to no business operation. Traces whose root name overflowed (`root_name_id` NULL) are never excluded.
 - **Idempotency.** `ON CONFLICT (trace_id, trace_day) DO NOTHING` together with the guarded progress update makes a re-run of a chunk harmless. That covers a crash between COMMIT and the next chunk, and two leaders. A retained key that is added later is **not retroactive**, because existing digest rows are never rewritten.
 
@@ -1516,18 +1520,18 @@ Java processes the eligible ids in batches of up to 2 000 operations, one transa
 -- $ids uuid[], $first uuid-aligned timestamptz[]; $min_day/$max_day and $min_obs/$max_obs are the batch-wide
 -- static bounds (min first_seen − max merge_window, max last_seen + max merge_window), for plan-time pruning
 WITH ops AS (
-    SELECT bo.id, bo.first_seen, bo.last_seen, bo.correlation_type_id, bo.display_value,
+    SELECT bo.id, bo.first_seen, bo.last_seen, bo.operation_definition_id, bo.display_value,
            ct.merge_window, ct.outcome_rule
     FROM unnest($ids::uuid[], $first::timestamptz[]) AS u(id, first_seen)
     JOIN tc.business_operation bo ON bo.id = u.id AND bo.first_seen = u.first_seen
-    JOIN tc.correlation_type  ct ON ct.id = bo.correlation_type_id
+    JOIN tc.business_operation_definition  ct ON ct.id = bo.operation_definition_id
 ),
 via_corr AS (            -- members through the correlation path (gives the step label)
     SELECT o.id AS operation_id, c.trace_id, c.correlation_key_id, c.observed_at
     FROM ops o
     JOIN tc.correlation_value cv ON cv.operation_id = o.id
     JOIN tc.trace_correlation c
-      ON c.correlation_type_id = cv.correlation_type_id AND c.value = cv.value
+      ON c.operation_definition_id = cv.operation_definition_id AND c.value = cv.value
      AND c.observed_at >= o.first_seen - o.merge_window AND c.observed_at <= o.last_seen + o.merge_window
     WHERE c.observed_at >= $min_obs AND c.observed_at <= $max_obs
 ),
@@ -1564,7 +1568,7 @@ outcome_input AS (       -- latest member trace (by start) that carries outcomeK
     WHERE o.outcome_rule ? 'outcomeKey' AND s.attributes ? (o.outcome_rule ->> 'outcomeKey')
     ORDER BY s.operation_id, s.start_time DESC, s.trace_id DESC
 )
-SELECT o.id, o.first_seen, o.last_seen, o.correlation_type_id, o.display_value, o.outcome_rule,
+SELECT o.id, o.first_seen, o.last_seen, o.operation_definition_id, o.display_value, o.outcome_rule,
        count(s.trace_id)::int                                             AS trace_count,
        bool_or(s.error_count > 0)                                         AS any_error,
        bool_or(s.step_label = o.outcome_rule ->> 'finalStepLabel')        AS final_step_reached,
@@ -1581,7 +1585,7 @@ FROM ops o
 LEFT JOIN steps s          ON s.operation_id  = o.id
 LEFT JOIN outcome_input oi ON oi.operation_id = o.id
 LEFT JOIN attr_union au    ON au.operation_id = o.id
-GROUP BY o.id, o.first_seen, o.last_seen, o.correlation_type_id, o.display_value, o.outcome_rule,
+GROUP BY o.id, o.first_seen, o.last_seen, o.operation_definition_id, o.display_value, o.outcome_rule,
          oi.outcome_values, au.attributes;
 ```
 
@@ -1606,7 +1610,7 @@ The outcome value is read from `trace_digest.attributes`. The FULL-tier `trace_a
 ```sql
 -- BO3: write (same transaction as BO2), then account for the day
 INSERT INTO tc.business_operation_digest
-       (first_seen, last_seen, compacted_at, operation_id, op_day, correlation_type_id,
+       (first_seen, last_seen, compacted_at, operation_id, op_day, operation_definition_id,
         trace_count, outcome, display_value, outcome_detail, steps, attributes)
 SELECT u.first_seen, u.last_seen, now(), u.id, (u.first_seen AT TIME ZONE 'UTC')::date, u.type_id,
        u.trace_count, u.outcome, u.display_value, u.detail, COALESCE(u.steps, '[]'::jsonb), u.attributes
@@ -1703,9 +1707,9 @@ SELECT 'IN', span_id, trace_id, linked_span_id, attributes FROM tc.span_link
 WHERE linked_trace_id = $1 AND start_time >= $2 - interval '1 day' AND start_time < now();
 
 -- correlations and their operations
-SELECT c.correlation_type_id, c.correlation_key_id, c.value, cv.operation_id
+SELECT c.operation_definition_id, c.correlation_key_id, c.value, cv.operation_id
 FROM tc.trace_correlation c
-LEFT JOIN tc.correlation_value cv USING (correlation_type_id, value)
+LEFT JOIN tc.correlation_value cv USING (operation_definition_id, value)
 WHERE c.trace_id = $1 AND c.observed_at >= $2 - interval '1 day' AND c.observed_at < now();
 ```
 
@@ -1900,7 +1904,7 @@ Variants of the predicate:
 
 ```sql
 -- 1. resolve the survivor (follow merged_into; path compression keeps chains at length ≤ 1)
-SELECT id, first_seen, last_seen, correlation_type_id, display_value, trace_count, merged_into
+SELECT id, first_seen, last_seen, operation_definition_id, display_value, trace_count, merged_into
 FROM tc.business_operation
 WHERE id = $op
   AND first_seen >= uuid_extract_timestamp($op) - interval '120 days'   -- coarse pruning:
@@ -1909,13 +1913,13 @@ WHERE id = $op
 
 -- 2. ordered timeline
 WITH vals AS (
-    SELECT correlation_type_id, value FROM tc.correlation_value WHERE operation_id = $survivor
+    SELECT operation_definition_id, value FROM tc.correlation_value WHERE operation_id = $survivor
 ),
 hits AS (
     SELECT DISTINCT ON (c.trace_id) c.trace_id, c.correlation_key_id, c.observed_at
     FROM vals v
     JOIN tc.trace_correlation c
-      ON c.correlation_type_id = v.correlation_type_id AND c.value = v.value
+      ON c.operation_definition_id = v.operation_definition_id AND c.value = v.value
     WHERE c.observed_at >= $first_seen - $merge_window AND c.observed_at <= $last_seen + $merge_window
     ORDER BY c.trace_id, c.observed_at
 )
@@ -1946,10 +1950,10 @@ UNION
 -- ... and traces in the same business operation(s)
 SELECT c2.trace_id, 'OPERATION:' || cv.operation_id
 FROM tc.trace_correlation c1
-JOIN tc.correlation_value cv USING (correlation_type_id, value)
+JOIN tc.correlation_value cv USING (operation_definition_id, value)
 JOIN tc.correlation_value cv2 ON cv2.operation_id = cv.operation_id
 JOIN tc.trace_correlation c2
-  ON c2.correlation_type_id = cv2.correlation_type_id AND c2.value = cv2.value
+  ON c2.operation_definition_id = cv2.operation_definition_id AND c2.value = cv2.value
  AND c2.observed_at >= $start - interval '1 day' - $merge_window
  AND c2.observed_at <  $end + interval '1 day' + $merge_window
 WHERE c1.trace_id = $1 AND c1.observed_at >= $start - interval '1 day' AND c1.observed_at < now()
@@ -2040,7 +2044,7 @@ For non-selective documents such as `client_id = bookstore-web`, the planner ins
 1. Resolve the id in the FULL tier with `tc.operation_root($id)` and §7.5. If found, return the live timeline. Its `outcome` is computed on the fly by the same `OutcomeEvaluator` as compaction (§6.8), from the timeline's traces and the FULL-tier attribute values of `outcomeKey`.
 2. Otherwise probe the digest:
    ```sql
-   SELECT operation_id, op_day, first_seen, last_seen, correlation_type_id, display_value, trace_count,
+   SELECT operation_id, op_day, first_seen, last_seen, operation_definition_id, display_value, trace_count,
           outcome, outcome_detail, steps, attributes
    FROM tc.business_operation_digest
    WHERE operation_id = $id
@@ -2055,22 +2059,22 @@ For non-selective documents such as `client_id = bookstore-web`, the planner ins
 ```sql
 -- FULL part: by value (correlation_value PK), else by type and time (business_operation_type_first_seen_idx)
 SELECT tc.operation_root(cv.operation_id) AS id FROM tc.correlation_value cv
-WHERE cv.correlation_type_id = $type AND cv.value = $value;
+WHERE cv.operation_definition_id = $type AND cv.value = $value;
 
 -- DIGEST part, by value: display_value, or any retained correlation-key value via GIN
 SELECT operation_id, first_seen, last_seen, display_value, trace_count, outcome, outcome_detail
 FROM tc.business_operation_digest
-WHERE correlation_type_id = $type
+WHERE operation_definition_id = $type
   AND op_day BETWEEN $from::date AND $to::date
   AND (display_value = $value OR attributes @> $value_doc)    -- $value_doc = {"<corr key>":["<value>"]} per retained key
   AND ($outcome::smallint IS NULL OR outcome = $outcome)
 ORDER BY first_seen DESC, operation_id DESC
 LIMIT $limit + 1;
 
--- DIGEST part, without value: (correlation_type_id, outcome, first_seen DESC) or (correlation_type_id, first_seen DESC)
+-- DIGEST part, without value: (operation_definition_id, outcome, first_seen DESC) or (operation_definition_id, first_seen DESC)
 SELECT operation_id, first_seen, last_seen, display_value, trace_count, outcome, outcome_detail
 FROM tc.business_operation_digest
-WHERE correlation_type_id = $type AND outcome = $outcome
+WHERE operation_definition_id = $type AND outcome = $outcome
   AND first_seen >= $from AND first_seen < $to AND op_day BETWEEN $from::date AND $to::date
   AND (first_seen, operation_id) < ($cursor_ts, $cursor_id)
 ORDER BY first_seen DESC, operation_id DESC
@@ -2246,7 +2250,7 @@ WHERE parent_table = 'tc.span';
 | Tier | Tables | Drop condition for a partition with bounds [lo, hi) |
 |---|---|---|
 | FULL | `span`, `trace_attribute`, `span_link`, `trace_summary`, `trace_enrichment` | `hi ≤ now − n days` **and** the drop gate holds |
-| FULL | `trace_correlation` | as above, **and** `hi ≤ now − n days − max(correlation_type.merge_window) − 1 day`. This keeps step labels for operations compacted a day later (§6.8). |
+| FULL | `trace_correlation` | as above, **and** `hi ≤ now − n days − max(business_operation_definition.merge_window) − 1 day`. This keeps step labels for operations compacted a day later (§6.8). |
 | FULL | `business_operation` (MONTH) | `hi ≤ now − n days` **and** sweep BO0 (§6.8) finds no non-merged operation in the partition without a `business_operation_digest` row |
 | DIGEST | `trace_digest`, `business_operation_digest` | `hi ≤ now − (n + m) days`. No gate is needed. |
 
@@ -2421,7 +2425,7 @@ These are the FULL-tier bytes per trace. They are unchanged by ADR-13; only the 
 | Header + null bitmap | 32 |
 | first_seen, last_seen, compacted_at (3 × 8) | 24 |
 | operation_id uuid | 16 |
-| op_day, correlation_type_id, trace_count (3 × 4) + outcome 2 | 14 |
+| op_day, operation_definition_id, trace_count (3 × 4) + outcome 2 | 14 |
 | display_value text (1 B header + 24) | 25 |
 | steps jsonb: 3 objects × ≈ 172 B (44 B header and JEntries + 42 B keys + ≈ 86 B values and padding) + 16 B array + 4 B varlena, after 1 B alignment pad | 537 |
 | attributes jsonb (union, **ASSUMPTION**) | 360 |
@@ -2892,7 +2896,7 @@ REVOKE ALL ON SCHEMA tc FROM PUBLIC;
 GRANT USAGE ON SCHEMA tc TO tc_ingester, tc_enricher, tc_admin, tc_query;
 GRANT TEMPORARY ON DATABASE tracing TO tc_ingester;
 
-GRANT SELECT ON tc.attribute_key, tc.indexed_attribute, tc.correlation_type, tc.correlation_key,
+GRANT SELECT ON tc.attribute_key, tc.indexed_attribute, tc.business_operation_definition, tc.correlation_key,
                 tc.retention_policy, tc.config_revision, tc.enrichment_source,
                 tc.enrichment_source_revision, tc.kafka_connection
       TO tc_ingester, tc_enricher;
@@ -2909,7 +2913,7 @@ GRANT SELECT, INSERT ON tc.trace_enrichment, tc.trace_attribute, tc.trace_correl
 
 -- tc_admin (control plane); revisions are append-only
 GRANT SELECT, INSERT, UPDATE ON tc.kafka_connection, tc.enrichment_source, tc.attribute_key,
-                               tc.indexed_attribute, tc.correlation_type, tc.correlation_key,
+                               tc.indexed_attribute, tc.business_operation_definition, tc.correlation_key,
                                tc.retention_policy, tc.config_revision TO tc_admin;
 GRANT SELECT, INSERT ON tc.enrichment_source_revision TO tc_admin;
 GRANT DELETE ON tc.correlation_key TO tc_admin;
@@ -3071,11 +3075,11 @@ All deviations are additive or clarifying. No table or column defined in the bri
 1. **New column `indexed_attribute.backfill_cursor timestamptz NULL`.** It records AttributeBackfill progress (the last hour processed), so `tc-maintenance` can resume after a leader change. It is shared with docs 05 and 06.
 2. **Extra indexes.**
    - `correlation_value (operation_id)`, used by the timeline and by merges.
-   - `business_operation (correlation_type_id, first_seen DESC)`, for listing operations.
+   - `business_operation (operation_definition_id, first_seen DESC)`, for listing operations.
    - `resource (service_id)`.
    - FK-support indexes `enrichment_source (connection_id)` and `correlation_key (key_id)`.
 3. **Extra constraints.**
-   - `UNIQUE (correlation_type_id, key_id)` on `correlation_key`.
+   - `UNIQUE (operation_definition_id, key_id)` on `correlation_key`.
    - A deferrable composite FK from `enrichment_source (id, current_revision)` to `enrichment_source_revision`.
    - CHECK constraints for enums, lengths and singleton tables.
    - A CHECK that forbids inline secrets in `client_properties`.
@@ -3097,7 +3101,7 @@ All deviations are additive or clarifying. No table or column defined in the bri
     - **DIGEST tier:** `trace_digest` and `business_operation_digest` are kept until n + m = 97 days (`digestDays` = 90). `retention_policy` stores the *total* age n + m in DIGEST rows and n in FULL rows.
     - **Changelog `005-two-tier-retention.sql`** (§4.7) adds:
       - columns `indexed_attribute.retain_in_digest` and `digest_transform`;
-      - column `correlation_type.outcome_rule`;
+      - column `business_operation_definition.outcome_rule`;
       - column `retention_policy.tier`;
       - tables `trace_digest`, `business_operation_digest`, `compaction_exclusion` (seeded with `GET /actuator/%`) and `compaction_state`;
       - the function `tc.operation_root(uuid)`.

@@ -10,7 +10,7 @@
 
     <artifactId>tc-query-api</artifactId>
     <name>tc-query-api</name>
-    <description>Read-only search and trace API (03 §4)</description>
+    <description>Read-only search and trace API</description>
 
     <dependencies>
         <dependency>
@@ -32,7 +32,7 @@
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
         </dependency>
-        <!-- tests: full-context integration tests only (09 §0.3) -->
+        <!-- tests: full-context integration tests only -->
         <dependency>
             <groupId>ru.aasmc</groupId>
             <artifactId>tc-test-infra</artifactId>

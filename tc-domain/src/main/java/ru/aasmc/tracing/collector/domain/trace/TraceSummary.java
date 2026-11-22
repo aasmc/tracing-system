@@ -1,10 +1,16 @@
 package ru.aasmc.tracing.collector.domain.trace;
 
+import static ru.aasmc.tracing.collector.domain.DomainViolationException.require;
+
 import java.time.Instant;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
+import ru.aasmc.tracing.collector.domain.ViolationCode;
 
 /**
  * Header row of a trace: time bounds, root, counters and services, kept up to date as fragments of the trace arrive.
@@ -43,6 +49,25 @@ public record TraceSummary(
         Instant firstIngestedAt,
         Instant lastIngestedAt) {
 
+    /** Earlier start first, then the smaller unsigned span id. */
+    private static final Comparator<RootSpan> ROOT_ORDER = Comparator.comparingLong(RootSpan::startEpochNanos)
+            .thenComparing(root -> root.spanId().value(), Long::compareUnsigned);
+
+    public TraceSummary {
+        require(spanCount >= 1, ViolationCode.INVALID_TRACE_SUMMARY, "no spans: " + spanCount);
+        require(
+                errorCount >= 0 && errorCount <= spanCount,
+                ViolationCode.INVALID_TRACE_SUMMARY,
+                errorCount + " errors in " + spanCount + " spans");
+        require(endEpochNanos >= startEpochNanos, ViolationCode.INVALID_TRACE_SUMMARY, "end before start");
+        require(fragmentCount >= 1, ViolationCode.INVALID_TRACE_SUMMARY, "no fragments: " + fragmentCount);
+        require(
+                !lastIngestedAt.isBefore(firstIngestedAt),
+                ViolationCode.INVALID_TRACE_SUMMARY,
+                "last insert before first");
+        serviceIds = Collections.unmodifiableSortedSet(new TreeSet<>(serviceIds));
+    }
+
     /**
      * Summary of the spans one fragment inserted ({@code fragmentCount = 1}).
      *
@@ -60,7 +85,32 @@ public record TraceSummary(
             ToIntFunction<Span> serviceIdOf,
             Function<Span, Integer> nameIdOf,
             Instant now) {
-        throw new UnsupportedOperationException();
+        require(!inserted.isEmpty(), ViolationCode.INVALID_TRACE_SUMMARY, "no inserted spans");
+        TraceId traceId = inserted.iterator().next().traceId();
+        require(
+                inserted.stream().allMatch(span -> span.traceId().equals(traceId)),
+                ViolationCode.INVALID_TRACE_SUMMARY,
+                "spans of several traces");
+        SortedSet<Integer> serviceIds = new TreeSet<>();
+        inserted.forEach(span -> serviceIds.add(serviceIdOf.applyAsInt(span)));
+        RootSpan root = inserted.stream()
+                .filter(Span::isRoot)
+                .map(span -> new RootSpan(
+                        span.spanId(), serviceIdOf.applyAsInt(span), nameIdOf.apply(span), span.startEpochNanos()))
+                .min(ROOT_ORDER)
+                .orElse(null);
+        return new TraceSummary(
+                traceId,
+                day,
+                inserted.stream().mapToLong(Span::startEpochNanos).min().orElseThrow(),
+                inserted.stream().mapToLong(Span::endEpochNanos).max().orElseThrow(),
+                root,
+                inserted.size(),
+                (int) inserted.stream().filter(span -> span.status().isError()).count(),
+                serviceIds,
+                1,
+                now,
+                now);
     }
 
     /**
@@ -72,6 +122,30 @@ public record TraceSummary(
      *     summaries of different traces
      */
     public TraceSummary merge(TraceSummary other) {
-        throw new UnsupportedOperationException();
+        require(
+                traceId.equals(other.traceId),
+                ViolationCode.INVALID_TRACE_SUMMARY,
+                "cannot merge traces " + traceId + " and " + other.traceId);
+        SortedSet<Integer> allServiceIds = new TreeSet<>(serviceIds);
+        allServiceIds.addAll(other.serviceIds);
+        return new TraceSummary(
+                traceId,
+                traceDay.compareTo(other.traceDay) <= 0 ? traceDay : other.traceDay,
+                Math.min(startEpochNanos, other.startEpochNanos),
+                Math.max(endEpochNanos, other.endEpochNanos),
+                earlierRoot(root, other.root),
+                spanCount + other.spanCount,
+                errorCount + other.errorCount,
+                allServiceIds,
+                fragmentCount + other.fragmentCount,
+                firstIngestedAt.isBefore(other.firstIngestedAt) ? firstIngestedAt : other.firstIngestedAt,
+                lastIngestedAt.isAfter(other.lastIngestedAt) ? lastIngestedAt : other.lastIngestedAt);
+    }
+
+    private static RootSpan earlierRoot(RootSpan a, RootSpan b) {
+        if (a == null || b == null) {
+            return a == null ? b : a;
+        }
+        return ROOT_ORDER.compare(a, b) <= 0 ? a : b;
     }
 }

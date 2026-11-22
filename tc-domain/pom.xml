@@ -10,19 +10,19 @@
 
     <artifactId>tc-domain</artifactId>
     <name>tc-domain</name>
-    <description>Framework-free domain model: value objects, aggregates, policies, state machines (05)</description>
+    <description>Framework-free domain model: value objects, aggregates, policies, state machines</description>
 
-    <!-- No Spring, JDBC, Kafka or Jackson dependency (pure-Java libraries such as RE2/J are allowed): enforced by DomainArchitectureTest (09 §0.3 T12).
-         Domain tests are plain JUnit 5 (*Test, surefire): no Spring context, no containers (09 §0.3 T1). -->
+    <!-- No Spring, JDBC, Kafka or Jackson dependency (pure-Java libraries such as RE2/J are allowed): enforced by DomainArchitectureTest.
+         Domain tests are plain JUnit 5 (*Test, surefire): no Spring context, no containers. -->
     <dependencies>
-        <!-- pure-Java, linear-time regular expressions for REGEX_EXTRACT transforms (03 §5.4 V9) -->
+        <!-- pure-Java, linear-time regular expressions for REGEX_EXTRACT transforms -->
         <dependency>
             <groupId>com.google.re2j</groupId>
             <artifactId>re2j</artifactId>
         </dependency>
 
         <!-- the aggregate includes junit-jupiter-params: property-style checks (commutativity, orderings) are
-             @ParameterizedTest over seeded permutations (testmodel.domain.Permutations), no jqwik (09 1b-1).
+             @ParameterizedTest over seeded permutations (testmodel.domain.Permutations), no jqwik.
              The test model (package ru.aasmc.tracing.collector.testmodel.domain) ships in the test-jar. -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

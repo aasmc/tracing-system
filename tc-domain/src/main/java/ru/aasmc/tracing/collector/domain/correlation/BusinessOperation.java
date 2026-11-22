@@ -1,7 +1,10 @@
 package ru.aasmc.tracing.collector.domain.correlation;
 
+import static ru.aasmc.tracing.collector.domain.DomainViolationException.require;
+
 import java.time.Instant;
 import java.util.UUID;
+import ru.aasmc.tracing.collector.domain.ViolationCode;
 
 /**
  * A set of traces that together perform one business action, e.g. one login.
@@ -15,7 +18,7 @@ import java.util.UUID;
  * @param id time-ordered id
  * @param firstSeen earliest observation
  * @param lastSeen latest observation
- * @param correlationTypeId the type; operations of different types never merge
+ * @param operationDefinitionId the definition of the operation; operations of different definitions never merge
  * @param displayValue the first primary value, {@code null} while provisional
  * @param traceCount distinct member traces
  * @param mergedInto the operation that absorbed this one, or {@code null}
@@ -24,25 +27,52 @@ public record BusinessOperation(
         UUID id,
         Instant firstSeen,
         Instant lastSeen,
-        int correlationTypeId,
+        int operationDefinitionId,
         String displayValue,
         int traceCount,
         UUID mergedInto) {
 
+    private static final int TIME_ORDERED_UUID_VERSION = 7;
+
+    public BusinessOperation {
+        require(
+                id != null && id.version() == TIME_ORDERED_UUID_VERSION,
+                ViolationCode.INVALID_BUSINESS_OPERATION,
+                "operation id is not a version-7 UUID: " + id);
+        require(
+                firstSeen != null && lastSeen != null && !firstSeen.isAfter(lastSeen),
+                ViolationCode.INVALID_BUSINESS_OPERATION,
+                "operation " + id + " seen from " + firstSeen + " to " + lastSeen);
+        require(traceCount >= 0, ViolationCode.INVALID_BUSINESS_OPERATION, "negative trace count: " + traceCount);
+        require(
+                !id.equals(mergedInto),
+                ViolationCode.INVALID_BUSINESS_OPERATION,
+                "operation " + id + " cannot be merged into itself");
+    }
+
     public boolean isProvisional() {
-        throw new UnsupportedOperationException();
+        return displayValue == null;
     }
 
     /** Widens {@code [firstSeen, lastSeen]} to {@code observedAt} and sets the display value if it has none. */
     public BusinessOperation includeObservation(Instant observedAt, String primaryValueOrNull) {
-        throw new UnsupportedOperationException();
+        return new BusinessOperation(
+                id,
+                observedAt.isBefore(firstSeen) ? observedAt : firstSeen,
+                observedAt.isAfter(lastSeen) ? observedAt : lastSeen,
+                operationDefinitionId,
+                isProvisional() ? primaryValueOrNull : displayValue,
+                traceCount,
+                mergedInto);
     }
 
     public BusinessOperation withTraceCount(int traceCount) {
-        throw new UnsupportedOperationException();
+        return new BusinessOperation(
+                id, firstSeen, lastSeen, operationDefinitionId, displayValue, traceCount, mergedInto);
     }
 
     public BusinessOperation markMergedInto(UUID survivorId) {
-        throw new UnsupportedOperationException();
+        return new BusinessOperation(
+                id, firstSeen, lastSeen, operationDefinitionId, displayValue, traceCount, survivorId);
     }
 }

@@ -1,5 +1,9 @@
 package ru.aasmc.tracing.collector.domain.attribute;
 
+import static ru.aasmc.tracing.collector.domain.DomainViolationException.require;
+
+import ru.aasmc.tracing.collector.domain.ViolationCode;
+
 /**
  * An attribute key that is searchable: only these keys are written to the search index. A key may also be retained:
  * its values are then copied into the trace digest that is kept after the full trace data is deleted.
@@ -23,6 +27,21 @@ public record IndexedAttribute(
         boolean retainedInDigest,
         DigestTransform digestTransform) {
 
+    public IndexedAttribute {
+        require(
+                !(builtIn && status == IndexStatus.DISABLED),
+                ViolationCode.BUILT_IN_KEY,
+                "built-in key " + key.value() + " cannot be disabled");
+        require(
+                !(retainedInDigest && status == IndexStatus.DISABLED),
+                ViolationCode.RETAINED_KEY_MUST_BE_INDEXED,
+                "retained key " + key.value() + " cannot be disabled");
+        require(
+                retainedInDigest || digestTransform == DigestTransform.NONE,
+                ViolationCode.INVALID_DIGEST_TRANSFORM,
+                "key " + key.value() + " is not retained, so it has no digest transform");
+    }
+
     /**
      * Moves to another status following {@link IndexStatus#transitionTo}.
      *
@@ -30,7 +49,8 @@ public record IndexedAttribute(
      *     above
      */
     public IndexedAttribute moveTo(IndexStatus target) {
-        throw new UnsupportedOperationException();
+        IndexStatus newStatus = status.transitionTo(target).resultingStateOrThrow();
+        return new IndexedAttribute(keyId, key, newStatus, builtIn, retainedInDigest, digestTransform);
     }
 
     /**
@@ -41,6 +61,15 @@ public record IndexedAttribute(
      */
     public IndexedAttribute retainInDigest(
             DigestTransform transform, Sensitivity sensitivity, boolean personalDataAcknowledged) {
-        throw new UnsupportedOperationException();
+        boolean inClearText = transform == DigestTransform.NONE;
+        require(
+                !(inClearText && sensitivity == Sensitivity.SECRET),
+                ViolationCode.SECRET_RETAINED_IN_CLEAR,
+                "secret key " + key.value() + " cannot be retained in clear text");
+        require(
+                !(inClearText && sensitivity == Sensitivity.PERSONAL && !personalDataAcknowledged),
+                ViolationCode.PERSONAL_DATA_RETAINED_IN_CLEAR,
+                "personal key " + key.value() + " is retained in clear text only when acknowledged");
+        return new IndexedAttribute(keyId, key, status, builtIn, true, transform);
     }
 }

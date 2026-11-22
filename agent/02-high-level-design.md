@@ -69,7 +69,7 @@ It replaces the rest with the decisions in §9.
 | FR-06 | Activate, pause, update and delete enrichment sources at runtime. Running consumers follow within ≤ 30 s. | UC-05 |
 | FR-07 | Attach enrichment values to a trace (or span) whether the event arrives before or after the spans. | UC-06 |
 | FR-08 | Let admins declare which attribute keys are searchable ("indexed attributes"), with backfill over retained data. Indexed keys can be flagged `retainInDigest` with a `digestTransform` (NONE, SHA256, MASK); flagging a non-indexed key indexes it. | UC-07, UC-23 |
-| FR-09 | Let admins declare correlation types (PRIMARY and ALIAS keys) with an optional `outcomeRule`. Link traces automatically into business operations and merge operations through alias keys. | UC-08, UC-09, UC-10 |
+| FR-09 | Let admins declare business operation definitions (PRIMARY and ALIAS keys) with an optional `outcomeRule`. Link traces automatically into business operations and merge operations through alias keys. | UC-08, UC-09, UC-10 |
 | FR-10 | Get a full trace by id: span tree, resources, enrichments, links, correlations. After n days, return the trace digest instead (`tier = DIGEST`, `spansExpired = true`). | UC-11, UC-22 |
 | FR-11 | Search traces by time range (≤ 7 days when the range touches the FULL tier, ≤ 31 days when it lies entirely in the DIGEST tier) plus service, root span name, duration, status and indexed attributes, with keyset pagination across both tiers. | UC-12, UC-22 |
 | FR-12 | Bounded brute-force search on non-indexed attributes (window ≤ 1 h). | UC-13 |
@@ -134,7 +134,7 @@ C4Context
     title System Context - Trace Collector System (TCS)
 
     Person(analyst, "Support engineer / analyst", "Searches traces, inspects business operations")
-    Person(admin, "TCS admin", "Manages connections, enrichment sources, indexed attributes, correlation types, retention")
+    Person(admin, "TCS admin", "Manages connections, enrichment sources, indexed attributes, business operation definitions, retention")
     Person(clientTeam, "Enrichment-topic owner", "Client team that owns a Kafka topic with business events")
 
     System_Ext(apps, "Instrumented microservices", "Spring Boot 4 apps with otlp-kafka-export-tracing-starter")
@@ -370,7 +370,7 @@ flowchart LR
 **Enrichment path.**
 - Admins register a `kafka_connection` and an `enrichment_source` (with an immutable revision) through `tc-control-plane`. It validates the definition, tests the connection with `AdminClient.describeTopics`, and offers dry-run and preview (UC-04). It then bumps `config_revision`.
 - `tc-enricher` polls `config_revision` and diffs desired against actual sources. It then starts, stops, restarts or hot-swaps per-source listener containers (UC-05).
-- For each event it extracts the trace context (W3C `traceparent` by default) and the mapped fields. It writes append-only `trace_enrichment` rows, keyed for idempotency by `(source_id, kafka_partition, kafka_offset, key_id, observed_at)`. For inserted rows only, it also writes `trace_attribute` (when the key is indexed) and `trace_correlation` (when the key belongs to a correlation type).
+- For each event it extracts the trace context (W3C `traceparent` by default) and the mapped fields. It writes append-only `trace_enrichment` rows, keyed for idempotency by `(source_id, kafka_partition, kafka_offset, key_id, observed_at)`. For inserted rows only, it also writes `trace_attribute` (when the key is indexed) and `trace_correlation` (when the key belongs to a business operation definition).
 - Order does not matter: enrichment is joined to spans at read time by `trace_id` (UC-06).
 
 **Correlation path.**
@@ -382,7 +382,7 @@ flowchart LR
   - All three end up in one operation (UC-09, UC-10).
 
 **Compaction path (ADR-13).**
-- Data lives in the **FULL tier** for n = `fullDays` days (default 7). `DigestCompactor` then condenses each trace into one `trace_digest` row (root service and name, duration, span and error counts, outcome, services, business operation, and the values of the attribute keys flagged `retain_in_digest`, transformed by `digest_transform`) and each ended business operation into one `business_operation_digest` row (steps, outcome by the correlation type's `outcome_rule`, union of retained attributes).
+- Data lives in the **FULL tier** for n = `fullDays` days (default 7). `DigestCompactor` then condenses each trace into one `trace_digest` row (root service and name, duration, span and error counts, outcome, services, business operation, and the values of the attribute keys flagged `retain_in_digest`, transformed by `digest_transform`) and each ended business operation into one `business_operation_digest` row (steps, outcome by the business operation definition's `outcome_rule`, union of retained attributes).
 - Inputs are `trace_summary`, `trace_attribute` (retained keys only), `trace_correlation` and `correlation_value`, never `span`. Traces matching a `compaction_exclusion` (for example `GET /actuator/%`) are skipped unless they belong to a business operation.
 - The **DIGEST tier** is kept for a further m = `digestDays` days (default 90), so business history covers n + m = 97 days at about 0.5 KB per trace instead of ~13.8 KB.
 - `PartitionManager` drops FULL-tier partitions only after the days they cover are compacted (drop gate).
@@ -672,7 +672,7 @@ Each ADR records which property is **borrowed** and from where. "Tempo" refers t
 - **Decision.**
   - `trace_enrichment` rows are keyed by `trace_id` (and an optional `span_id`) and joined at read time.
   - If an enrichment key is indexed, it is also written to `trace_attribute` with `origin=ENRICHMENT`.
-  - If the key belongs to a correlation type, it is also written to `trace_correlation`.
+  - If the key belongs to a business operation definition, it is also written to `trace_correlation`.
   - There is no pending queue.
 - **Consequences.**
   - Order independence (UC-06).
@@ -698,13 +698,13 @@ Each ADR records which property is **borrowed** and from where. "Tempo" refers t
   - One redeploy per source.
 - **Borrowed from:** **OTel Collector** (receivers declared in configuration).
 
-### ADR-09 — Business-operation linking through correlation types; span links indexed
+### ADR-09 — Business-operation linking through business operation definitions; span links indexed
 
 - **Context.** IdP login spans three traces. There is no shared trace id, but there are shared business ids.
 - **Decision.**
-  - A `correlation_type` declares keys with role PRIMARY or ALIAS and a `step_label`.
+  - A `business_operation_definition` declares keys with role PRIMARY or ALIAS and a `step_label`.
   - Ingester and enricher append `trace_correlation` rows synchronously.
-  - The single-leader `CorrelationResolver` (union-find) maintains `business_operation` and `correlation_value`. Merges respect `merge_window`.
+  - The single-leader `CorrelationResolver` (linking traces one at a time, in time order) maintains `business_operation` and `correlation_value`. Merges respect `merge_window`.
   - Native OTel span links are stored in `span_link`, indexed by `trace_id` and `linked_trace_id` (UC-20).
   - Recommended producer practice: propagate the business id as W3C Baggage and copy it to span tags (`management.tracing.baggage.remote-fields` plus `management.tracing.baggage.tag-fields`), or set it with `@TraceAttribute`.
 - **Consequences.**
@@ -752,7 +752,7 @@ Each ADR records which property is **borrowed** and from where. "Tempo" refers t
   - **DIGEST tier:** `trace_digest` (one row per trace) and `business_operation_digest` (one row per business operation), daily partitions, kept `digestDays` = m days (default **90**) **after** the FULL tier ends, i.e. dropped at n + m days of age (97 by default). m = 0 disables the digest.
   - Configuration lives in `retention_policy` (new column `tier` FULL / DIGEST) and is changed with `PUT /api/v1/admin/retention-policies/tiers` `{"fullDays":7,"digestDays":90}` in one transaction with a `config_revision` bump. Validation: `fullDays ≥ 2` and `fullDays >` the largest correlation `merge_window` (in days, rounded up); `digestDays ≥ 0`. `tc.retention.full-days=7` and `tc.retention.digest-days=90` only seed the migration.
   - **Retained attributes:** `indexed_attribute.retain_in_digest` and `digest_transform` (NONE, SHA256, MASK). A retained key must be indexed, because compaction reads `trace_attribute` and never `span`; flagging a non-indexed key creates the `indexed_attribute` (BACKFILLING). Enrichment-derived values are covered, because indexed enrichment keys already reach `trace_attribute`.
-  - **Outcome:** `trace_digest.outcome` 1 = OK, 2 = ERROR (from `error_count`). Business operations get `OperationOutcome` (UNKNOWN, SUCCESS, FAILED, INCOMPLETE) from the correlation type's `outcome_rule` (`outcomeKey`, `successValues`, `failureValues`, `finalStepLabel`).
+  - **Outcome:** `trace_digest.outcome` 1 = OK, 2 = ERROR (from `error_count`). Business operations get `OperationOutcome` (UNKNOWN, SUCCESS, FAILED, INCOMPLETE) from the business operation definition's `outcome_rule` (`outcomeKey`, `successValues`, `failureValues`, `finalStepLabel`).
   - **Compaction:** `tc-maintenance` `DigestCompactor` (ShedLock `digest-compactor`, every 5 min) processes each whole day older than n days in 1-hour chunks with one set-based `INSERT … SELECT … ON CONFLICT DO NOTHING` per chunk, resumable through `compaction_state`. `compaction_exclusion` filters noise such as health checks.
   - **Drop gate:** a FULL-tier partition is dropped only when its upper bound ≤ now − n days **and** every `trace_day` whose compaction read window overlaps it is DONE. Uncompacted data is never dropped; the gate is skipped when m = 0.
   - **Reads:** trace by id falls back to `trace_digest`; search splits the range at the tier boundary (max window 7 d when touching FULL, 31 d entirely in DIGEST); business operations fall back to `business_operation_digest`. The DIGEST part of a search uses a GIN `jsonb_path_ops` index on `attributes`: unlike live spans (ADR-05), the digest is written once in batches, so GIN maintenance is affordable.
@@ -825,7 +825,7 @@ All storage figures in this table come from 04 §9, which takes precedence if th
 | `otlp-traces` → PostgreSQL | At-least-once delivery, effectively-once result | Offset commit after DB commit; `ON CONFLICT DO NOTHING RETURNING`; counters derived from inserted rows only (UC-02) |
 | Poison message | Exactly one DLQ record per poison record (at-least-once publish) | `DeadLetterPublishingRecoverer`, `failIfSendResultIsError=true`; offset committed only after the DLQ ack (UC-03) |
 | Enrichment topic → PostgreSQL | Effectively-once | Unique `(source_id, kafka_partition, kafka_offset, key_id, observed_at)`; derived rows only for inserted rows |
-| Correlation resolution | Eventually consistent, idempotent | Lagged watermark plus idempotent union-find (03 §6.3) |
+| Correlation resolution | Eventually consistent, idempotent | Lagged watermark plus idempotent trace-by-trace linking (03 §6.3) |
 | Primary failover | RPO 0 for committed offsets | Patroni synchronous replication plus an offset-rewind runbook (SD-3) |
 | FULL tier → DIGEST tier (ADR-13) | Effectively-once per trace and per operation; no FULL data dropped before it is compacted | One transaction per chunk inserts digests `ON CONFLICT DO NOTHING` and advances `compaction_state.last_chunk_end`; PartitionManager drop gate (03 §6.2, §6.7) |
 
@@ -844,7 +844,7 @@ All storage figures in this table come from 04 §9, which takes precedence if th
 | Kafka unavailable | Consumer errors | Ingest stalls. Producers buffer per the starter's limits, then drop. | Platform. |
 | CorrelationResolver down | `tc_maintenance_job_last_success_timestamp` | Operations are stale; traces are still searchable. | ShedLock fails over to the other replica after `lockAtMostFor`. |
 | Hourly partition creation blocked by locks | `lock_timeout` errors in PartitionManager | Retried every 15 min; 3-day buffer. | Alert when fewer than 24 h of partitions remain. |
-| Correlation "mega-merge" (bad key such as `client_id`) | `tc_correlation_operation_size` histogram | Merge capped at 1 000 traces per operation; further merges refused and counted. | Admin fixes the correlation type. |
+| Correlation "mega-merge" (bad key such as `client_id`) | `tc_correlation_operation_size` histogram | Merge capped at 1 000 traces per operation; further merges refused and counted. | Admin fixes the business operation definition. |
 | Digest compaction lagging (slow chunks, primary saturated, job down) | `tc_compaction_lag_days > 1`; `tc_maintenance_job_last_success_timestamp{job="digest-compactor"}` | The drop gate keeps every uncompacted FULL-tier partition, so **no data is lost**; disk grows by ≈ 1.2 TB per lagging day at M. Search and trace by id keep serving those days from the FULL tier. | Find the cause (chunk timings, primary I/O); compaction resumes from `compaction_state.last_chunk_end`. Disk alert at 80 % gives several days of margin with the headroom. |
 | Compaction chunk fails (statement timeout, deadlock, bad data) | `compaction_state.status = FAILED` with `error`; `tc_compaction_chunk_seconds` | Chunk transaction rolls back; the day is retried after a back-off (default 30 min); later days continue. | Automatic retry; persistent failures need an operator (e.g. raise the chunk timeout or shrink the chunk). |
 | Retained key misconfigured (PII retained in clear, key not flagged) | Admin review, audit log | Not retroactive in either direction: wrongly retained values stay until their digest partitions expire (n + m days); values of unflagged keys are lost after n days. | Fix the flag/transform; for PII retained in clear, drop or rewrite the affected `trace_digest` partitions with a runbook. |

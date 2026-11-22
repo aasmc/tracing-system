@@ -10,7 +10,7 @@
 
     <artifactId>tc-kafka-support</artifactId>
     <name>tc-kafka-support</name>
-    <description>Kafka client properties, SecretResolver, TopicGuard, DLQ helpers, extraction engine (03 §9.1)</description>
+    <description>Kafka client properties, SecretResolver, TopicGuard, DLQ helpers, extraction engine</description>
 
     <dependencies>
         <dependency>

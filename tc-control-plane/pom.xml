@@ -10,7 +10,7 @@
 
     <artifactId>tc-control-plane</artifactId>
     <name>tc-control-plane</name>
-    <description>Administration API for sources, correlation, indexing, retention (03 §5)</description>
+    <description>Administration API for sources, correlation, indexing, retention</description>
 
     <dependencies>
         <dependency>
@@ -35,7 +35,7 @@
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
         </dependency>
-        <!-- tests: full-context integration tests only (09 §0.3) -->
+        <!-- tests: full-context integration tests only -->
         <dependency>
             <groupId>ru.aasmc</groupId>
             <artifactId>tc-test-infra</artifactId>

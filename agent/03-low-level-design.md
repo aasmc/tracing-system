@@ -375,23 +375,15 @@ The canonical `attributes jsonb` is a flat object `{key: value}` with keys in th
 
 **Canonical resource hash.**
 
+The id is computed by the domain's `ResourceHasher.resourceId(schemaUrl, attributes)`: xxHash64 (seed 0, pure Java) of a length-prefixed encoding in which every text is written as `<UTF-8 byte length> ':' <bytes>` and every array carries its size, so two different contents never share an encoding (04 §5.6). `ResourceDeduplicator` only caches the ids it has already written:
+
 ```java
 public final class ResourceDeduplicator {
-    private static final LongHashFunction XX = LongHashFunction.xx(0);   // net.openhft:zero-allocation-hashing
-    private final Cache<Long, Boolean> known = Caffeine.newBuilder().maximumSize(200_000).build();
-
-    /** id = xxHash64(schemaUrl \u0001 sorted(key \u0002 type \u0002 canonicalValue) joined by \u0001). */
-    public long resourceId(String schemaUrl, Attributes attrs) {
-        var sb = new StringBuilder(512).append(schemaUrl == null ? "" : schemaUrl);
-        attrs.sortedByKey().forEach(a ->
-            sb.append('\u0001').append(a.key()).append('\u0002').append(a.type()).append('\u0002')
-              .append(a.canonicalValue()));                 // arrays as JSON text, doubles via Double.toString
-        return XX.hashChars(sb);
-    }
+    private final Cache<ResourceId, Boolean> known = Caffeine.newBuilder().maximumSize(200_000).build();
 }
 ```
 
-The `scope_id` is computed the same way over `(name, version, schemaUrl, sorted attributes)`.
+The `scope_id` is computed the same way over `(name, version, schemaUrl, sorted attributes)` by `ResourceHasher.instrumentationScopeId`.
 
 **Insert-if-absent** runs for cache misses only, in one autocommit statement per kind and batch, with ids sorted ascending to keep lock order deterministic:
 
@@ -509,10 +501,10 @@ For each normalized span, using the immutable `IndexedAttributeRegistry` snapsho
 - Across batches, a per-pod Caffeine `RecentIndexFilter` (1 M entries, 30 min) of committed `(trace_id, key_id, value_str)` suppresses most repeats. For example, `service.name` is repeated in every fragment of a service.
 - Duplicates that remain are tolerated (brief §5) and removed by `DISTINCT` at query time.
 
-`CorrelationExtractor`: for every attribute (span or resource) whose `key_id` belongs to an ACTIVE `correlation_type` through `correlation_key`, it emits `(observed_at = span.start_time, correlation_type_id, correlation_key_id, value, trace_id, origin)`, de-duplicated per `(trace_id, correlation_key_id, value)` in the batch.
+`CorrelationExtractor`: for every attribute (span or resource) whose `key_id` belongs to an ACTIVE `business_operation_definition` through `correlation_key`, it emits `(observed_at = span.start_time, operation_definition_id, correlation_key_id, value, trace_id, origin)`, de-duplicated per `(trace_id, correlation_key_id, value)` in the batch.
 
 Example (IdP), trace T2:
-- `idp.auth_session_id=as-777` → correlation type `idp.login`, PRIMARY key.
+- `idp.auth_session_id=as-777` → business operation definition `idp.login`, PRIMARY key.
 - `oauth.authorization_code=code-abc` → the same type, ALIAS key.
 - `auth.factor=SMS` → `trace_attribute` only, if indexed.
 
@@ -543,7 +535,7 @@ CREATE TEMP TABLE IF NOT EXISTS stg_link (
 
 CREATE TEMP TABLE IF NOT EXISTS stg_corr (
     trace_id uuid, span_id bigint, start_time timestamptz, observed_at timestamptz,
-    correlation_type_id int, correlation_key_id int, value text, origin smallint
+    operation_definition_id int, correlation_key_id int, value text, origin smallint
 ) ON COMMIT DELETE ROWS;
 ```
 
@@ -646,9 +638,9 @@ lnk AS (
     RETURNING 1
 ),
 cor AS (
-    INSERT INTO tc.trace_correlation (observed_at, correlation_type_id, correlation_key_id, value, trace_id, origin)
+    INSERT INTO tc.trace_correlation (observed_at, operation_definition_id, correlation_key_id, value, trace_id, origin)
     SELECT DISTINCT ON (c.trace_id, c.correlation_key_id, c.value)
-           c.observed_at, c.correlation_type_id, c.correlation_key_id, c.value, c.trace_id, c.origin
+           c.observed_at, c.operation_definition_id, c.correlation_key_id, c.value, c.trace_id, c.origin
     FROM stg_corr c
     JOIN ins i USING (trace_id, span_id, start_time)
     ORDER BY c.trace_id, c.correlation_key_id, c.value, c.observed_at
@@ -944,6 +936,8 @@ WHERE s.status IN ('ACTIVE', 'PAUSED');
 
 ### 3.6 Extraction pipeline
 
+> **Deviation (implementation, 2026-11-22).** The per-event rules below (trace context, field reading, transforms, type conversion, required fields) are implemented in the domain as `EnrichmentSourceDefinition.extract(EnrichmentEvent, maxValueBytes)`, returning `Extraction` (`Enriched` / `NoTraceContext` / `Rejected`). `tc-kafka-support` only adapts a Kafka record and its JSON payload to `EnrichmentEvent`; the strategy classes and the second `TraceContext` named in this section are not built. Size check, filter, timestamp checks and DLQ publishing stay in the enricher as described.
+
 ```text
 for record in batch:
   if record.value.length > definition.maxRecordBytes (default 1 MiB):      dlq(PAYLOAD_TOO_LARGE); continue
@@ -1162,7 +1156,7 @@ Result:
 One transaction per poll and source. The inputs are parallel arrays for:
 - `v`: the values
 - `a`: the subset whose key is indexed
-- `c`: the correlation rows; a key can belong to several correlation types
+- `c`: the correlation rows; a key can belong to several business operation definitions
 
 `a` and `c` are keyed by `(kafka_partition, kafka_offset, key_id)`.
 
@@ -1191,11 +1185,11 @@ attr AS (
 ),
 c AS (
     SELECT * FROM unnest(?::int[], ?::bigint[], ?::int[], ?::int[], ?::int[], ?::text[])
-        AS c(kafka_partition, kafka_offset, key_id, correlation_type_id, correlation_key_id, value)
+        AS c(kafka_partition, kafka_offset, key_id, operation_definition_id, correlation_key_id, value)
 ),
 cor AS (
-    INSERT INTO tc.trace_correlation (observed_at, correlation_type_id, correlation_key_id, value, trace_id, origin)
-    SELECT i.observed_at, c.correlation_type_id, c.correlation_key_id, c.value, i.trace_id, 3
+    INSERT INTO tc.trace_correlation (observed_at, operation_definition_id, correlation_key_id, value, trace_id, origin)
+    SELECT i.observed_at, c.operation_definition_id, c.correlation_key_id, c.value, i.trace_id, 3
     FROM c JOIN ins i USING (kafka_partition, kafka_offset, key_id)
     RETURNING 1
 )
@@ -1429,7 +1423,7 @@ public record SpanDto(String spanId, String parentSpanId, int depth, String serv
 public record EnrichmentDto(String source, int sourceRevision, String spanId, String key, Object value,
                             Instant observedAt) {}
 
-public record CorrelationDto(String correlationType, String key, String role, String stepLabel, String value,
+public record CorrelationDto(String operationDefinition, String key, String role, String stepLabel, String value,
                              UUID businessOperationId) {}
 
 public enum IncompleteReason { NO_ROOT, RECENTLY_UPDATED, ORPHAN_SPANS, SPAN_LIMIT_REACHED, PARTIALLY_EXPIRED }
@@ -1457,13 +1451,13 @@ public record TimelineEntryDto(String traceId, Tier tier, Instant startTime, dou
                                String rootName, String stepLabel, String linkedBy /* key = value; null in DIGEST */,
                                TraceOutcome outcome) {}
 
-public record BusinessOperationDto(UUID id, Tier tier, String correlationType, String displayValue,
+public record BusinessOperationDto(UUID id, Tier tier, String operationDefinition, String displayValue,
                                    Instant firstSeen, Instant lastSeen, int traceCount,
                                    OperationOutcome outcome, String outcomeDetail,
                                    Map<String, List<String>> attributes,   // DIGEST: union of retained attributes
                                    List<TimelineEntryDto> timeline) {}
 
-public record BusinessOperationSummaryDto(UUID id, Tier tier, String correlationType, String displayValue,
+public record BusinessOperationSummaryDto(UUID id, Tier tier, String operationDefinition, String displayValue,
                                           Instant firstSeen, Instant lastSeen, int traceCount,
                                           OperationOutcome outcome) {}
 
@@ -1657,7 +1651,7 @@ getTrace(traceId, start?, end?):
   5. links: outgoing = SELECT ... FROM tc.span_link WHERE trace_id = :id AND start_time >= :min_start - 1 day
             incoming = (only in /related)
   6. correlations: SELECT c.*, cv.operation_id FROM tc.trace_correlation c
-                   LEFT JOIN tc.correlation_value cv USING (correlation_type_id, value)
+                   LEFT JOIN tc.correlation_value cv USING (operation_definition_id, value)
                    WHERE c.trace_id = :id AND c.observed_at >= :min_start - interval '1 day'
   7. tree:  index spans by spanId; for each span: parent = map[parentSpanId]
             roots = spans with parentSpanId null; orphans = spans whose parent is absent (flag orphan = true,
@@ -1690,14 +1684,14 @@ WHERE linked_trace_id = :id AND start_time >= :min_start - interval '1 day';
 -- same business operations
 SELECT DISTINCT cv.operation_id
 FROM tc.trace_correlation c
-JOIN tc.correlation_value cv USING (correlation_type_id, value)
+JOIN tc.correlation_value cv USING (operation_definition_id, value)
 WHERE c.trace_id = :id AND c.observed_at >= :min_start - interval '1 day';
 ```
 
 **Business-operation timeline.** First resolve the operation, following `merged_into` to the survivor (at most 8 hops):
 
 ```sql
-SELECT id, first_seen, last_seen, correlation_type_id, display_value, trace_count, merged_into
+SELECT id, first_seen, last_seen, operation_definition_id, display_value, trace_count, merged_into
 FROM tc.business_operation WHERE id = :id;                          -- probes the ~2 monthly partitions (FULL tier ≤ ~38 days, §6.2)
 ```
 
@@ -1705,14 +1699,14 @@ Then fetch the timeline:
 
 ```sql
 WITH vals AS (
-    SELECT correlation_type_id, value FROM tc.correlation_value WHERE operation_id = :op
+    SELECT operation_definition_id, value FROM tc.correlation_value WHERE operation_id = :op
 ),
 tr AS (
     SELECT c.trace_id, min(c.observed_at) AS first_obs,
            (array_agg(ck.step_label ORDER BY c.observed_at))[1]       AS step_label,
            (array_agg(ak.key || ' = ' || c.value ORDER BY c.observed_at))[1] AS linked_by
     FROM tc.trace_correlation c
-    JOIN vals v USING (correlation_type_id, value)
+    JOIN vals v USING (operation_definition_id, value)
     JOIN tc.correlation_key ck ON ck.id = c.correlation_key_id
     JOIN tc.attribute_key ak ON ak.id = ck.key_id
     WHERE c.observed_at >= :op_first_seen - interval '1 day' AND c.observed_at <= :op_last_seen + interval '1 day'
@@ -1955,14 +1949,14 @@ public record SearchCursor(int v, Tier tier, Mode mode, long startMicros, UUID t
   - DIGEST part:
 
 ```sql
-SELECT operation_id, op_day, correlation_type_id, display_value, first_seen, last_seen, trace_count,
+SELECT operation_id, op_day, operation_definition_id, display_value, first_seen, last_seen, trace_count,
        outcome, outcome_detail
 FROM tc.business_operation_digest
 WHERE op_day BETWEEN :from_day AND :to_day
-  AND correlation_type_id = :type
-  AND (:value IS NULL OR display_value = :value_t        -- index (correlation_type_id, display_value)
+  AND operation_definition_id = :type
+  AND (:value IS NULL OR display_value = :value_t        -- index (operation_definition_id, display_value)
        OR attributes @> :value_json::jsonb)               -- alias values, only if that key is retained
-  AND (:outcome IS NULL OR outcome = :outcome)          -- index (correlation_type_id, outcome, first_seen DESC)
+  AND (:outcome IS NULL OR outcome = :outcome)          -- index (operation_definition_id, outcome, first_seen DESC)
   AND first_seen >= :from AND first_seen < :digest_to
   AND (first_seen, operation_id) < (:cursor_first_seen, :cursor_op)
 ORDER BY first_seen DESC, operation_id DESC
@@ -1992,7 +1986,7 @@ tc:
 The admin REST API (`/api/v1/admin`, role `TC_ADMIN`) for:
 - Kafka connections and enrichment sources (UC-04, UC-05)
 - indexed attributes (UC-07)
-- correlation types (UC-08), including the business-operation `outcomeRule` (ADR-13)
+- business operation definitions (UC-08), including the business-operation `outcomeRule` (ADR-13)
 - retention policies (UC-16) and the retention tiers `fullDays` / `digestDays` (ADR-13, UC-23)
 - retained attributes (`retainInDigest`, `digestTransform`) and compaction exclusions (UC-23)
 
@@ -2008,7 +2002,7 @@ flowchart TB
     vault["Vault / k8s Secrets"]
 
     subgraph CP["tc-control-plane"]
-        API["admin.api<br/>ConnectionController, SourceController,<br/>IndexedAttributeController, CorrelationTypeController,<br/>RetentionPolicyController, CompactionExclusionController,<br/>CompactionStateController"]
+        API["admin.api<br/>ConnectionController, SourceController,<br/>IndexedAttributeController, BusinessOperationDefinitionController,<br/>RetentionPolicyController, CompactionExclusionController,<br/>CompactionStateController"]
         VAL["admin.validation<br/>SourceDefinitionValidator, ConnectionValidator,<br/>RetentionTiersValidator, OutcomeRuleValidator"]
         CMP["enrich.extract - shared<br/>ExtractionPlanCompiler"]
         CT["admin.kafka<br/>ConnectionTester - AdminClient"]
@@ -2043,7 +2037,7 @@ flowchart TB
 | `POST /enrichment-sources/{id}/test` | Dry-run on a sample payload, headers, key and timestamp (optionally with an unsaved `definition`) |
 | `POST /enrichment-sources/{id}/preview?limit=N` | Reads the last N (≤ 50) records of the topic with assign + seek (no group, no commit) and runs the dry-run on each |
 | `GET/POST /indexed-attributes`, `PATCH /indexed-attributes/{keyId}` (status `DISABLED`/`ACTIVE`; `retainInDigest`, `digestTransform`; creates the indexed attribute when `retainInDigest = true` on a non-indexed key, §5.9) | UC-07, UC-23 |
-| `GET/POST /correlation-types`, `GET/PUT /correlation-types/{id}` (incl. `outcomeRule`, §5.9), `POST /correlation-types/{id}/keys`, `DELETE /correlation-types/{id}/keys/{keyId}` | UC-08, UC-23 |
+| `GET/POST /business-operation-definitions`, `GET/PUT /business-operation-definitions/{id}` (incl. `outcomeRule`, §5.9), `POST /business-operation-definitions/{id}/keys`, `DELETE /business-operation-definitions/{id}/keys/{keyId}` | UC-08, UC-23 |
 | `GET /retention-policies`, `PUT /retention-policies/{tableName}` (`precreate`, `partition_granularity` only) | UC-16 |
 | `GET/PUT /retention-policies/tiers` — body `{"fullDays":7,"digestDays":90}` (§5.9) | UC-23 |
 | `GET/POST /compaction-exclusions`, `GET/PUT/DELETE /compaction-exclusions/{id}` (§5.9) | UC-23 |
@@ -2110,9 +2104,9 @@ It returns:
   "traceContext": {"traceId": "4bf92f3577b34da6a3ce929d0e0e4736", "spanId": "00f067aa0ba902b7"},
   "fields": [
     {"targetKey": "sms.delivery.status", "value": "DELIVERED", "valueType": "STRING", "status": "OK",
-     "indexed": true, "correlationTypes": []},
+     "indexed": true, "operationDefinitions": []},
     {"targetKey": "sms.provider", "value": "smsc-1", "valueType": "STRING", "status": "OK",
-     "indexed": false, "correlationTypes": []}
+     "indexed": false, "operationDefinitions": []}
   ],
   "outcome": "WOULD_WRITE",
   "dlqReason": null
@@ -2176,10 +2170,10 @@ public SourceView updateDefinition(long id, int expectedRevision, SourceDefiniti
 ```
 
 **Rules.**
-- **Every** mutation of `kafka_connection`, `enrichment_source(_revision)`, `indexed_attribute`, `correlation_type`, `correlation_key`, `retention_policy` and `compaction_exclusion` calls `revisionBumper.bump()` in the same transaction. Consumers (ingester, enricher, query-api caches) therefore see either all of a change or none of it.
+- **Every** mutation of `kafka_connection`, `enrichment_source(_revision)`, `indexed_attribute`, `business_operation_definition`, `correlation_key`, `retention_policy` and `compaction_exclusion` calls `revisionBumper.bump()` in the same transaction. Consumers (ingester, enricher, query-api caches) therefore see either all of a change or none of it.
 - The `config_revision` single row serialises concurrent admin transactions, which is acceptable because admin traffic is tiny.
 - Indexed attribute creation: insert `attribute_key` if absent, then `INSERT INTO tc.indexed_attribute (key_id, origin_scope, numeric, status, indexed_since, created_by, created_at) VALUES (…, 'BACKFILLING', now(), …)`. With `backfill=false` the status is `ACTIVE` immediately. The ingester picks the change up within 10 s; `AttributeBackfill` covers older data (UC-07).
-- Correlation type creation: keys must reference `attribute_key` rows (created if absent). At least one PRIMARY key is required, and `merge_window` must be between 1 min and `fullDays` − 1 day (6 d with the default n = 7, rule O5). The optional `outcomeRule` is validated by O1–O4 (§5.9).
+- Business operation definition creation: keys must reference `attribute_key` rows (created if absent). At least one PRIMARY key is required, and `merge_window` must be between 1 min and `fullDays` − 1 day (6 d with the default n = 7, rule O5). The optional `outcomeRule` is validated by O1–O4 (§5.9).
 - Retention policy: retention values are set per tier only (§5.9); all FULL-tier tables share n, so `trace_summary` retention always equals `span` retention, which the trace-by-id lookup depends on. `precreate` must be ≥ 1 day. Changing `partition_granularity` applies only to partitions created afterwards.
 
 **Audit.** `AuditLogger` writes JSON lines to logger `tc.audit` (shipped to the SIEM): `{ts, user, roles, action, entity, id, before_revision, after_revision, config_revision, client_ip}`. Definitions are versioned immutably, so the audit log plus the revision tables give full history.
@@ -2229,7 +2223,7 @@ All endpoints below require `TC_ADMIN`, run in one transaction with `revisionBum
 | # | Rule | Error code |
 |---|---|---|
 | R1 | `fullDays` is an integer ≥ 2 | `FULL_DAYS_TOO_SMALL` |
-| R2 | `fullDays` > the largest `correlation_type.merge_window`, in days rounded up (a business operation must be able to close inside the FULL tier) | `FULL_DAYS_BELOW_MERGE_WINDOW` |
+| R2 | `fullDays` > the largest `business_operation_definition.merge_window`, in days rounded up (a business operation must be able to close inside the FULL tier) | `FULL_DAYS_BELOW_MERGE_WINDOW` |
 | R3 | `digestDays` is an integer ≥ 0 (0 = digest disabled; the drop gate is then skipped) | `INVALID_DIGEST_DAYS` |
 
 ```java
@@ -2265,7 +2259,7 @@ public RetentionTiersView updateTiers(RetentionTiers req, String user) {
   - `status = DISABLED` while `retain_in_digest = true` → `409 /problems/retained-key-must-be-indexed` (unset the flag first, or in the same request).
 - The flag is not retroactive: days already DONE are not re-compacted.
 
-**Outcome rule on correlation types.** `POST /correlation-types` and `PUT /correlation-types/{id}` accept an optional `outcomeRule` (stored in `correlation_type.outcome_rule`):
+**Outcome rule on business operation definitions.** `POST /business-operation-definitions` and `PUT /business-operation-definitions/{id}` accept an optional `outcomeRule` (stored in `business_operation_definition.outcome_rule`):
 
 ```json
 {"outcomeKey": "business.outcome", "successValues": ["SUCCESS"], "failureValues": ["FAILED", "DENIED"],
@@ -2419,7 +2413,7 @@ Additional per-table conditions:
 
 pg_partman 5.5.1 (`create_parent` with `p_premake`, plus the retention settings in `part_config`) is a drop-in alternative if the team prefers an extension.
 
-### 6.3 `CorrelationResolver` (union-find)
+### 6.3 `CorrelationResolver` (linking traces one at a time)
 
 **Goal.** Maintain `business_operation` and `correlation_value`, so that all traces sharing correlation values (directly or transitively through ALIAS keys) belong to one operation (UC-09, UC-10).
 
@@ -2429,7 +2423,7 @@ pg_partman 5.5.1 (`create_parent` with `p_premake`, plus the retention settings 
 - Re-reading the most recent 120 s is harmless, because processing is idempotent. An in-memory set of processed ids (bounded by the lag window) skips the actual work for rows already handled.
 
 ```sql
-SELECT id, observed_at, correlation_type_id, correlation_key_id, value, trace_id
+SELECT id, observed_at, operation_definition_id, correlation_key_id, value, trace_id
 FROM tc.trace_correlation
 WHERE id > :watermark
 ORDER BY id
@@ -2440,54 +2434,46 @@ LIMIT 50000;                       -- uses index (id) in each daily partition (M
 
 ```text
 rows = new rows (above)                                   // e.g. T1:{as-777}, T2:{as-777, code-abc}, T3:{code-abc}
-group rows by (correlation_type_id, trace_id)
+group rows by (operation_definition_id, trace_id)
 // 1. siblings: values the same traces carried in earlier runs (PRIMARY may arrive before ALIAS)
-siblings = SELECT DISTINCT correlation_type_id, value, trace_id FROM tc.trace_correlation
-           WHERE trace_id = ANY(:traceIds) AND correlation_type_id = ANY(:types)
+siblings = SELECT DISTINCT operation_definition_id, value, trace_id FROM tc.trace_correlation
+           WHERE trace_id = ANY(:traceIds) AND operation_definition_id = ANY(:types)
              AND observed_at >= :min_observed - interval '1 day'
 // 2. existing mappings of every value involved
-existing = SELECT cv.correlation_type_id, cv.value, cv.operation_id, cv.operation_first_seen,
+existing = SELECT cv.operation_definition_id, cv.value, cv.operation_id, cv.operation_first_seen,
                   bo.last_seen, bo.merged_into, bo.trace_count
            FROM tc.correlation_value cv
            JOIN tc.business_operation bo ON bo.id = cv.operation_id AND bo.first_seen = cv.operation_first_seen
-           WHERE (cv.correlation_type_id, cv.value) IN (SELECT * FROM unnest(:types, :values))
-// 3. union-find (per correlation type), nodes = values (type, value) and existing operations
-dsu = DisjointSet()
-for each (type, trace): union all values of that trace (rows + siblings)
-for each value with an existing mapping m:
-    op = follow(m.operation_id via merged_into)          // root survivor
-    if op.last_seen >= value.observed_at - type.merge_window: union(value, op)
-    else: mapping is stale -> value will be re-pointed   // merge_window prevents reuse collapsing months
-// 4. per component
-for comp in dsu.components():
-    ops = existing operations in comp
-    if ops empty:
-        create op: id = uuidv7() (generated by PG), first_seen = min(observed_at), last_seen = max(observed_at),
-                   display_value = value of the PRIMARY key if any, else the earliest value
-    else:
-        survivor = min(ops by first_seen, then id); losers = ops - survivor
-        survivor.last_seen = max(...); if survivor display_value came from ALIAS and comp has PRIMARY -> update
-        for l in losers: l.merged_into = survivor.id
-    upsert correlation_value for every value in comp -> survivor
-    if comp trace count > tc.maintenance.resolver.max-traces-per-operation (1000): do not merge further,
-       keep separate operations, metric tc_correlation_merge_refused_total
-// 5. trace_count for touched survivors (exact, bounded by the operation window)
+           WHERE (cv.operation_definition_id, cv.value) IN (SELECT * FROM unnest(:types, :values))
+// 3. OperationLinker.link(LinkingInput(definition, rows, siblings, existing live operations)), per definition:
+//    the traces of the batch are linked one at a time, in the order of their earliest new observation, on a working
+//    copy, exactly as if each came in a run of its own. For each trace:
+//      a value keeps its operation if the trace carried it within the merge window; outside the window it is reused
+//      (first time on this trace: starts a new operation) or reused since (carried by this trace in an earlier run:
+//      left out, so a late fragment never takes a value from the operation that uses it now);
+//      no operation kept -> create; one -> extend; several -> merge into the survivor (named first, then earlier
+//      first_seen, then smaller id as unsigned), unless the merged operation would exceed
+//      OperationMergePolicy.maxTracesPerOperation: then the trace changes nothing and a RefusedMerge is reported
+//      (metric tc_correlation_merge_refused_total);
+//      the trace's values are mapped to the resulting operation; trace_count + 1 unless the trace is already held
+// 4. write the LinkingResult: created, updated, merged (operations created and merged in the same run are never
+//    written), changed correlation_value rows, and the other values of merged operations repointed to the survivor
 // 6. persist lagged watermark into correlation_resolver_state
 ```
 
 All writes of a run happen in **one transaction**:
 
 ```sql
-INSERT INTO tc.business_operation (id, first_seen, last_seen, correlation_type_id, display_value, trace_count)
+INSERT INTO tc.business_operation (id, first_seen, last_seen, operation_definition_id, display_value, trace_count)
 VALUES (uuidv7(), :first_seen, :last_seen, :type, :display, 0)
 RETURNING id, first_seen;
 
 UPDATE tc.business_operation SET merged_into = :survivor, last_seen = GREATEST(last_seen, :ls)
 WHERE id = ANY(:losers);                                              -- prunes nothing; small (~2 partitions)
 
-INSERT INTO tc.correlation_value (correlation_type_id, value, operation_id, operation_first_seen, updated_at)
+INSERT INTO tc.correlation_value (operation_definition_id, value, operation_id, operation_first_seen, updated_at)
 SELECT * FROM unnest(:types, :values, :ops, :op_first_seen, :now_arr)
-ON CONFLICT (correlation_type_id, value) DO UPDATE
+ON CONFLICT (operation_definition_id, value) DO UPDATE
    SET operation_id = EXCLUDED.operation_id,
        operation_first_seen = EXCLUDED.operation_first_seen,
        updated_at = EXCLUDED.updated_at
@@ -2500,7 +2486,7 @@ WHERE operation_id = ANY(:losers);
 UPDATE tc.business_operation bo SET trace_count = x.cnt, last_seen = GREATEST(bo.last_seen, x.last_obs)
 FROM (SELECT cv.operation_id, count(DISTINCT c.trace_id) AS cnt, max(c.observed_at) AS last_obs
       FROM tc.correlation_value cv
-      JOIN tc.trace_correlation c USING (correlation_type_id, value)
+      JOIN tc.trace_correlation c USING (operation_definition_id, value)
       WHERE cv.operation_id = ANY(:touched) AND c.observed_at >= :window_start
       GROUP BY cv.operation_id) x
 WHERE bo.id = x.operation_id;
@@ -2509,7 +2495,7 @@ UPDATE tc.correlation_resolver_state SET last_processed_id = :lagged_watermark, 
 ```
 
 **Merge rules (summary).**
-1. Values carried by the same trace belong to the same operation, within one correlation type.
+1. Values carried by the same trace belong to the same operation, within one business operation definition.
 2. Each value maps to at most one live operation (`correlation_value` PK).
 3. When a component touches several operations, the oldest (`first_seen`, then `id`) survives. The others get `merged_into = survivor`, and their values are re-pointed. Merges are never undone automatically.
 4. An existing mapping older than `merge_window` (by `last_seen`) is not used to merge. The value starts a new operation, which protects against reused codes or ids.
@@ -2748,7 +2734,7 @@ attrs AS (SELECT trace_id, jsonb_object_agg(key, vals) AS attributes FROM attr G
 ops AS (                                                               -- earliest business operation of the trace
     SELECT DISTINCT ON (c.trace_id) c.trace_id, tc.operation_root(cv.operation_id) AS operation_id
     FROM tc.trace_correlation c
-    JOIN tc.correlation_value cv USING (correlation_type_id, value)
+    JOIN tc.correlation_value cv USING (operation_definition_id, value)
     WHERE c.observed_at >= :win_from AND c.observed_at < :win_to
       AND c.trace_id IN (SELECT trace_id FROM chunk)
     ORDER BY c.trace_id, c.observed_at
@@ -2776,7 +2762,7 @@ SELECT (SELECT count(*) FROM ins) AS digested, (SELECT count(*) FROM chunk) AS s
 ```
 
 - `tc.operation_root(uuid)` (SQL function, changelog 005) follows `business_operation.merged_into` to the survivor, at most 8 hops; normally `correlation_value` already points at the survivor (§6.3).
-- A trace correlated to several operations (different correlation types) records the earliest one.
+- A trace correlated to several operations (different business operation definitions) records the earliest one.
 - `attributes` holds only keys with `retain_in_digest = true` at the time of compaction. Values arriving in `trace_attribute` outside the read window are not captured (documented trade-off).
 - Chunk cost at M: ≈ 3.6 M `trace_summary` rows plus the retained-key range of `trace_attribute`; target ≤ 2 min per chunk, ≈ 20–40 min per day (ASSUMPTION, benchmark in 04).
 
@@ -2789,7 +2775,7 @@ SELECT (SELECT count(*) FROM ins) AS digested, (SELECT count(*) FROM chunk) AS s
    2. else any member has `error_count > 0` → `FAILED`;
    3. else `finalStepLabel` set: a member reached that step → `SUCCESS`, otherwise `INCOMPLETE`;
    4. else (no rule) → `SUCCESS`.
-4. `INSERT INTO tc.business_operation_digest (op_day, operation_id, correlation_type_id, display_value, first_seen, last_seen, trace_count, outcome, outcome_detail, steps, attributes, compacted_at) SELECT … FROM unnest(…) ON CONFLICT (operation_id, op_day) DO NOTHING`, with `op_day = first_seen::date` (UTC), `steps = [{"stepLabel","traceId","startTime","durationMs","outcome"}]`, `attributes` = union of the members' digest attributes, and `display_value` transformed with the PRIMARY key's `digest_transform` when that key is retained with SHA256/MASK.
+4. `INSERT INTO tc.business_operation_digest (op_day, operation_id, operation_definition_id, display_value, first_seen, last_seen, trace_count, outcome, outcome_detail, steps, attributes, compacted_at) SELECT … FROM unnest(…) ON CONFLICT (operation_id, op_day) DO NOTHING`, with `op_day = first_seen::date` (UTC), `steps = [{"stepLabel","traceId","startTime","durationMs","outcome"}]`, `attributes` = union of the members' digest attributes, and `display_value` transformed with the PRIMARY key's `digest_transform` when that key is retained with SHA256/MASK.
 5. `compaction_state.operations_digested += n` for the day of `last_seen`.
 
 **Configuration.**
@@ -2859,7 +2845,7 @@ tc-schema-changelog/src/main/resources/db/changelog/     # authoritative list an
   changes/003-seed.sql                    -- built-in keys, retention defaults, singleton rows
   changes/004-grants.sql                  -- privileges for tc_* application roles (runOnChange:true)
   changes/005-two-tier-retention.sql      -- ADR-13: retention_policy.tier, indexed_attribute.retain_in_digest /
-                                          --   digest_transform, correlation_type.outcome_rule, trace_digest,
+                                          --   digest_transform, business_operation_definition.outcome_rule, trace_digest,
                                           --   business_operation_digest (parents + indexes incl. GIN), compaction_exclusion,
                                           --   compaction_state, tc.operation_root(uuid); re-seeds retention rows
                                           --   from the ${fullDays}/${digestDays} changelog parameters
@@ -2933,7 +2919,7 @@ tc:
 | `/admin/connections`, `/admin/connections/:id` | Kafka connections list/editor + **Test connection** | `/admin/kafka-connections`, `…/{id}/test` | UC-04 |
 | `/admin/sources`, `/admin/sources/new`, `/admin/sources/:id` | **Enrichment source editor**: connection + topic, trace-context strategy, filter, field-mapping table (source, pointer/header, target key, type, transform, required), consumer options. **Test** panel (paste payload + headers → per-field results). **Preview** panel (last N records → per-record results). Revision history with diff. Activate/Pause. Live state from enricher metrics (via the control-plane) | `/admin/enrichment-sources/**` | UC-04, UC-05 |
 | `/admin/indexed-attributes` | List keys with status (BACKFILLING progress), add key (scope, numeric), disable; **"Retain in digest"** toggle + transform select (NONE/SHA256/MASK) per key, PII acknowledgement dialog for PII keys with NONE, "not retroactive" hint | `/admin/indexed-attributes` | UC-07, UC-23 |
-| `/admin/correlation-types`, `/admin/correlation-types/:id` | Correlation type editor: keys with role PRIMARY/ALIAS and step labels, merge window (max `fullDays` − 1 day); **outcome rule editor** (outcome key from indexed keys, success/failure value chips, final step label select from the type's step labels; validation O1–O5) | `/admin/correlation-types/**` | UC-08, UC-23 |
+| `/admin/business-operation-definitions`, `/admin/business-operation-definitions/:id` | Business operation definition editor: keys with role PRIMARY/ALIAS and step labels, merge window (max `fullDays` − 1 day); **outcome rule editor** (outcome key from indexed keys, success/failure value chips, final step label select from the type's step labels; validation O1–O5) | `/admin/business-operation-definitions/**` | UC-08, UC-23 |
 | `/admin/retention` | **Retention tiers form** (`fullDays`, `digestDays`, computed total n + m, confirmation of consequences returned by the API) and the per-table policies (tier, granularity, precreate; retention read-only) | `/admin/retention-policies`, `/admin/retention-policies/tiers` | UC-16, UC-23 |
 | `/admin/compaction-exclusions` | Compaction exclusions list/editor (service, root-name `LIKE` pattern, description) | `/admin/compaction-exclusions` | UC-23 |
 | `/admin/ops` | **Operations status**: compaction lag (days), per-day `compaction_state` table (status, progress by `last_chunk_end`, traces digested/excluded, operations digested, duration, error), FAILED days highlighted | `/admin/compaction-state` | UC-21 |
@@ -2974,7 +2960,7 @@ flowchart TB
     SourceEditor --> TestPanel["DryRunPanel (Monaco)"]
     SourceEditor --> PreviewPanel["PreviewPanel"]
     AdminLayout --> IdxPage["IndexedAttributesPage + RetainInDigestToggle"]
-    AdminLayout --> CorrTypePage["CorrelationTypesPage"]
+    AdminLayout --> CorrTypePage["BusinessOperationDefinitionsPage"]
     CorrTypePage --> OutcomeEditor["OutcomeRuleEditor"]
     AdminLayout --> RetentionPage["RetentionPage"]
     RetentionPage --> TiersForm["RetentionTiersForm"]

@@ -46,7 +46,6 @@
         <!-- not managed by Spring Boot 4.1.3 (Boot manages Testcontainers 2.0.5, Liquibase 5.0.4,
              Awaitility 4.3.0, Caffeine 3.2.4, AssertJ, JUnit Jupiter 6) -->
         <shedlock.version>7.11.0</shedlock.version>
-        <zero-allocation-hashing.version>0.27ea1</zero-allocation-hashing.version>
         <re2j.version>1.8</re2j.version>
         <springdoc.version>3.0.3</springdoc.version>
         <archunit.version>1.4.1</archunit.version>
@@ -111,11 +110,6 @@
                 <version>${shedlock.version}</version>
             </dependency>
             <dependency>
-                <groupId>net.openhft</groupId>
-                <artifactId>zero-allocation-hashing</artifactId>
-                <version>${zero-allocation-hashing.version}</version>
-            </dependency>
-            <dependency>
                 <groupId>com.google.re2j</groupId>
                 <artifactId>re2j</artifactId>
                 <version>${re2j.version}</version>
@@ -158,7 +152,7 @@
                     </configuration>
                 </plugin>
                 <plugin>
-                    <!-- domain tests (*Test): plain JUnit 5, no Spring context, no containers (09 §0.3 T1, T11) -->
+                    <!-- domain tests (*Test): plain JUnit 5, no Spring context, no containers -->
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <configuration>
@@ -197,7 +191,7 @@
                     <artifactId>maven-jar-plugin</artifactId>
                     <executions>
                         <execution>
-                            <!-- test model is reused by higher layers (09 §0.1 step b, item 0-3) -->
+                            <!-- test model is reused by higher layers -->
                             <id>test-jar</id>
                             <goals>
                                 <goal>test-jar</goal>
@@ -259,7 +253,7 @@
                         </goals>
                     </execution>
                     <execution>
-                        <!-- merged unit + integration report per module (09 §0.4) -->
+                        <!-- merged unit + integration report per module -->
                         <id>merge</id>
                         <phase>post-integration-test</phase>
                         <goals>

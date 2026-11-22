@@ -11,9 +11,9 @@
     <artifactId>tc-test-infra</artifactId>
     <name>tc-test-infra</name>
     <description>
-        Shared test infrastructure (09 §1.3): Testcontainers singletons, WireMock (OIDC, Vault), mutable clock,
+        Shared test infrastructure: Testcontainers singletons, WireMock (OIDC, Vault), mutable clock,
         Liquibase bootstrap, Kafka/JDBC probes. A normal jar that every module uses in test scope.
-        It contains no domain types and depends on no layer module (09 item 0-2).
+        It contains no domain types and depends on no layer module.
     </description>
 
     <dependencies>

@@ -10,7 +10,7 @@
 
     <artifactId>tc-schema-migrator</artifactId>
     <name>tc-schema-migrator</name>
-    <description>Runs the Liquibase changelogs of schema tc as a Job (03 §7)</description>
+    <description>Runs the Liquibase changelogs of schema tc as a Job</description>
 
     <dependencies>
         <dependency>
@@ -26,7 +26,7 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
-        <!-- tests: full-context integration tests only (09 §0.3) -->
+        <!-- tests: full-context integration tests only -->
         <dependency>
             <groupId>ru.aasmc</groupId>
             <artifactId>tc-test-infra</artifactId>

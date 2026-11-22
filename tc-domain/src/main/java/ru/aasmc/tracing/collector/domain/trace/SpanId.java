@@ -1,6 +1,11 @@
 package ru.aasmc.tracing.collector.domain.trace;
 
+import static ru.aasmc.tracing.collector.domain.DomainViolationException.require;
+
+import java.util.HexFormat;
 import java.util.Optional;
+import ru.aasmc.tracing.collector.domain.DomainViolationException;
+import ru.aasmc.tracing.collector.domain.ViolationCode;
 
 /**
  * A 64-bit W3C span id. Its text form is 16 lowercase hex characters; in PostgreSQL it is a signed {@code bigint},
@@ -12,6 +17,13 @@ import java.util.Optional;
  */
 public record SpanId(long value) {
 
+    private static final int HEX_LENGTH = 16;
+    private static final String ROOT_PARENT = "0000000000000000";
+
+    public SpanId {
+        require(value != 0, ViolationCode.INVALID_SPAN_ID, "span id is zero");
+    }
+
     /**
      * Parses 16 hex characters; upper case is accepted.
      *
@@ -19,7 +31,18 @@ public record SpanId(long value) {
      *     length, a non-hex character or all zeros
      */
     public static SpanId parse(String hex) {
-        throw new UnsupportedOperationException();
+        return tryParse(hex)
+                .orElseThrow(
+                        () -> new DomainViolationException(ViolationCode.INVALID_SPAN_ID, "not a span id: " + hex));
+    }
+
+    /** Like {@link #parse}, but returns empty instead of throwing. */
+    static Optional<SpanId> tryParse(String hex) {
+        if (hex == null || hex.length() != HEX_LENGTH || !Hex.isHex(hex, 0, HEX_LENGTH)) {
+            return Optional.empty();
+        }
+        long value = Hex.toLong(hex, 0, HEX_LENGTH);
+        return value == 0 ? Optional.empty() : Optional.of(new SpanId(value));
     }
 
     /**
@@ -27,17 +50,20 @@ public record SpanId(long value) {
      * {@code null} and {@code ""} give an empty result; anything else is parsed like {@link #parse}.
      */
     public static Optional<SpanId> parseParent(String hex) {
-        throw new UnsupportedOperationException();
+        if (hex == null || hex.isEmpty() || hex.equals(ROOT_PARENT)) {
+            return Optional.empty();
+        }
+        return Optional.of(parse(hex));
     }
 
     /** 16 lowercase hex characters. */
     public String toHex() {
-        throw new UnsupportedOperationException();
+        return HexFormat.of().toHexDigits(value);
     }
 
     /** Same as {@link #toHex()}. */
     @Override
     public String toString() {
-        throw new UnsupportedOperationException();
+        return toHex();
     }
 }

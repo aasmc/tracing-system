@@ -14,6 +14,14 @@ import java.util.Optional;
 public record Traceparent(int version, TraceId traceId, SpanId parentSpanId, TraceFlags flags) {
 
     /**
+     * Length of {@code vv-<32 hex trace id>-<16 hex parent id>-<2 hex flags>}; the fields start at indexes 0, 3, 36
+     * and 53.
+     */
+    private static final int VERSION_00_LENGTH = 55;
+
+    private static final int INVALID_VERSION = 0xff;
+
+    /**
      * Parses a value; never throws. Rules:
      *
      * <ul>
@@ -28,6 +36,25 @@ public record Traceparent(int version, TraceId traceId, SpanId parentSpanId, Tra
      * @return the parsed value, or empty if {@code value} is null or invalid
      */
     public static Optional<Traceparent> parse(String value) {
-        throw new UnsupportedOperationException();
+        if (value == null
+                || value.length() < VERSION_00_LENGTH
+                || !Hex.isHex(value, 0, 2)
+                || value.charAt(2) != '-'
+                || value.charAt(35) != '-'
+                || value.charAt(52) != '-'
+                || !Hex.isHex(value, 53, VERSION_00_LENGTH)) {
+            return Optional.empty();
+        }
+        int version = Integer.parseInt(value, 0, 2, 16);
+        boolean validLength = version == 0
+                ? value.length() == VERSION_00_LENGTH
+                : value.length() == VERSION_00_LENGTH || value.charAt(VERSION_00_LENGTH) == '-';
+        if (version == INVALID_VERSION || !validLength) {
+            return Optional.empty();
+        }
+        TraceFlags flags = new TraceFlags(Integer.parseInt(value, 53, VERSION_00_LENGTH, 16));
+        return TraceId.tryParse(value.substring(3, 35))
+                .flatMap(traceId -> SpanId.tryParse(value.substring(36, 52))
+                        .map(parentSpanId -> new Traceparent(version, traceId, parentSpanId, flags)));
     }
 }

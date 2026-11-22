@@ -2,7 +2,7 @@ package ru.aasmc.tracing.collector.domain.trace;
 
 /** Facts the collector records about a span while normalising it. */
 public enum SpanFlag {
-    /** An attribute value was longer than 4 KiB and was cut. */
+    /** An attribute value was longer than the configured limit and was cut. */
     ATTRIBUTE_TRUNCATED,
     /** The span had no end time; its duration is 0. */
     NOT_ENDED,

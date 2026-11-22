@@ -7,9 +7,9 @@ import java.util.Map;
 import java.util.Set;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeType;
+import ru.aasmc.tracing.collector.domain.correlation.BusinessOperationDefinition;
 import ru.aasmc.tracing.collector.domain.correlation.CorrelationKey;
 import ru.aasmc.tracing.collector.domain.correlation.CorrelationObservation;
-import ru.aasmc.tracing.collector.domain.correlation.CorrelationType;
 import ru.aasmc.tracing.collector.domain.correlation.KeyRole;
 import ru.aasmc.tracing.collector.domain.correlation.MemberTrace;
 import ru.aasmc.tracing.collector.domain.correlation.OutcomeRule;
@@ -33,7 +33,7 @@ import ru.aasmc.tracing.collector.domain.trace.TraceId;
  *   <li>T3, token exchange: the client redeems {@code code-abc}.
  * </ol>
  *
- * The correlation type {@code idp.login} links them into one business operation: T1–T2 share the session id
+ * The business operation definition {@code idp.login} links them into one business operation: T1–T2 share the session id
  * (primary key), T2–T3 share the authorization code (alias key). An SMS gateway reports the delivery of the SMS with
  * a {@code traceparent} pointing at the T2 span that sent it.
  */
@@ -111,8 +111,8 @@ public final class IdpScenario {
     }
 
     /** {@code idp.login}: primary key session id, alias key authorization code; complete once tokens are issued. */
-    public static CorrelationType correlationType() {
-        return new CorrelationType(
+    public static BusinessOperationDefinition operationDefinition() {
+        return new BusinessOperationDefinition(
                 1,
                 "idp.login",
                 Duration.ofDays(1),
@@ -164,6 +164,14 @@ public final class IdpScenario {
                 new TraceContextSource.TraceparentHeader(null),
                 EnrichmentScope.SPAN,
                 List.of(payloadMapping("/status", "sms.delivery.status"), payloadMapping("/provider", "sms.provider")));
+    }
+
+    /** The SMS gateway's delivery report for the SMS sent by T2: delivered through provider {@code twilio}. */
+    public static InMemoryEnrichmentEvent smsDeliveryReport() {
+        return InMemoryEnrichmentEvent.anEvent()
+                .withHeader("traceparent", SMS_TRACEPARENT)
+                .withPayload("/status", "DELIVERED")
+                .withPayload("/provider", "twilio");
     }
 
     /** A PAYLOAD mapping to a STRING attribute without transform. */

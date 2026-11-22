@@ -1,6 +1,6 @@
 package ru.aasmc.tracing.collector.domain.attribute;
 
-/** How sensitive the values of an attribute key are. */
+/** How sensitive the values of an attribute key are, from least to most sensitive. */
 public enum Sensitivity {
     /** Not personal. */
     NONE,

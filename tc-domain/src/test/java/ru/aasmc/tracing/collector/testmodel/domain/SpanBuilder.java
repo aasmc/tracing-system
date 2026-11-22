@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
+import ru.aasmc.tracing.collector.domain.attribute.AttributeValue;
 import ru.aasmc.tracing.collector.domain.resource.InstrumentationScopeId;
 import ru.aasmc.tracing.collector.domain.resource.ResourceId;
 import ru.aasmc.tracing.collector.domain.trace.DroppedCounts;
@@ -95,6 +96,11 @@ public final class SpanBuilder {
     }
 
     public SpanBuilder attribute(String key, String value) {
+        attributes.put(key, value);
+        return this;
+    }
+
+    public SpanBuilder attribute(String key, AttributeValue value) {
         attributes.put(key, value);
         return this;
     }

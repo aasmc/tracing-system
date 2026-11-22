@@ -2,6 +2,8 @@ package ru.aasmc.tracing.collector.domain.correlation;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
+import ru.aasmc.tracing.collector.domain.Limits;
 
 /**
  * Rules for linking traces into operations.
@@ -14,26 +16,35 @@ import java.time.Instant;
  *   <li><b>Size limit</b>: no merge may produce more than {@code maxTracesPerOperation} traces.
  * </ul>
  *
- * @param maxTracesPerOperation the size limit, {@code >= 1}
+ * @param maxTracesPerOperation the configurable size limit, {@code >= 1}; {@link #DEFAULT} holds the value used when
+ *     none is configured
  */
 public record OperationMergePolicy(int maxTracesPerOperation) {
 
     public static final OperationMergePolicy DEFAULT = new OperationMergePolicy(10_000);
 
+    /** Survivors first: named before provisional, then first seen earlier, then the smaller id (as PostgreSQL orders uuid). */
+    private static final Comparator<BusinessOperation> SURVIVOR_FIRST = Comparator.comparing(
+                    BusinessOperation::isProvisional)
+            .thenComparing(BusinessOperation::firstSeen)
+            .thenComparing(operation -> operation.id().getMostSignificantBits(), Long::compareUnsigned)
+            .thenComparing(operation -> operation.id().getLeastSignificantBits(), Long::compareUnsigned);
+
+    public OperationMergePolicy {
+        Limits.requirePositive("maxTracesPerOperation", maxTracesPerOperation);
+    }
+
     public BusinessOperation survivor(BusinessOperation a, BusinessOperation b) {
-        throw new UnsupportedOperationException();
+        return SURVIVOR_FIRST.compare(a, b) <= 0 ? a : b;
     }
 
     public boolean canJoin(BusinessOperation operation, Instant observedAt, Duration mergeWindow) {
-        throw new UnsupportedOperationException();
+        return !observedAt.isBefore(operation.firstSeen().minus(mergeWindow))
+                && !observedAt.isAfter(operation.lastSeen().plus(mergeWindow));
     }
 
-    /**
-     * Decides the merge of two different operations of the same type.
-     *
-     * @param combinedTraceCount distinct traces of both together
-     */
-    public MergeDecision decideMerge(BusinessOperation a, BusinessOperation b, int combinedTraceCount) {
-        throw new UnsupportedOperationException();
+    /** Whether a merge may produce an operation holding {@code combinedTraceCount} traces. */
+    public boolean allowsMerge(int combinedTraceCount) {
+        return combinedTraceCount <= maxTracesPerOperation;
     }
 }

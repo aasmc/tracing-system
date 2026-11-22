@@ -11,7 +11,12 @@ import ru.aasmc.tracing.collector.domain.trace.TraceId;
  * @param startTime trace start
  * @param errorCount spans with status ERROR, {@code >= 0}
  * @param outcomeValue the trace's value of the rule's outcome attribute, or {@code null}
- * @param stepLabels step labels of the keys that linked this trace
+ * @param stepLabels step labels of the keys that linked this trace; an immutable copy
  */
 public record MemberTrace(
-        TraceId traceId, Instant startTime, int errorCount, String outcomeValue, Set<String> stepLabels) {}
+        TraceId traceId, Instant startTime, int errorCount, String outcomeValue, Set<String> stepLabels) {
+
+    public MemberTrace {
+        stepLabels = Set.copyOf(stepLabels);
+    }
+}

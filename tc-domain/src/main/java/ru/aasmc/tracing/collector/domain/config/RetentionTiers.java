@@ -1,6 +1,9 @@
 package ru.aasmc.tracing.collector.domain.config;
 
+import static ru.aasmc.tracing.collector.domain.DomainViolationException.require;
+
 import java.time.Duration;
+import ru.aasmc.tracing.collector.domain.ViolationCode;
 
 /**
  * How long trace data is kept. Full data (every span) is kept {@code fullDataDays}; after that each trace is reduced to a
@@ -15,7 +18,14 @@ import java.time.Duration;
 public record RetentionTiers(int fullDataDays, int digestDays) {
 
     public static final int MIN_FULL_DATA_DAYS = 2;
-    public static final RetentionTiers DEFAULT = new RetentionTiers(7, 90);
+
+    public RetentionTiers {
+        require(
+                fullDataDays >= MIN_FULL_DATA_DAYS,
+                ViolationCode.FULL_DATA_DAYS_TOO_SMALL,
+                "full data is kept at least " + MIN_FULL_DATA_DAYS + " days, not " + fullDataDays);
+        require(digestDays >= 0, ViolationCode.INVALID_DIGEST_DAYS, "negative digest days: " + digestDays);
+    }
 
     /**
      * Traces of one business operation are linked while their data is still there, so full data must outlive the
@@ -25,11 +35,15 @@ public record RetentionTiers(int fullDataDays, int digestDays) {
      *     {@code mergeWindow <= fullDataDays - 1 day}
      */
     public void requireFullDataOutlives(Duration mergeWindow) {
-        throw new UnsupportedOperationException();
+        Duration longestWindow = fullDataRetention().minusDays(1);
+        require(
+                mergeWindow.compareTo(longestWindow) <= 0,
+                ViolationCode.FULL_DATA_DAYS_BELOW_MERGE_WINDOW,
+                "merge window " + mergeWindow + " is longer than " + longestWindow);
     }
 
     /** {@code fullDataDays} as a duration. */
     public Duration fullDataRetention() {
-        throw new UnsupportedOperationException();
+        return Duration.ofDays(fullDataDays);
     }
 }

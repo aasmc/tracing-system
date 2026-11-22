@@ -169,7 +169,7 @@ The Boot plugin attaches executable jars with classifier `exec`, so the plain ja
 - **Database name.** The test database is `tracing`, as in 04 §13.2 (`GRANT TEMPORARY ON DATABASE tracing`); 03 §7.2 used `tcs` and was corrected.
 - **Service connection role.** Contexts connect as the container superuser through `@ServiceConnection`. Modules that need a specific role turn it off with `tc.test.postgres.service-connection=false` and register `spring.datasource.*` themselves (`tc-schema-migrator` logs in as `tc_migrator`). Phase 2 decides whether service modules test with their own roles (`tc_ingester`, …) to exercise `004-grants.sql`.
 - **Deferred to Phase 2** (they need tables): `ConfigTableReset`, `JdbcProbe.countSpans/summary`, and `TestPartitions` delegating to `PartitionDdl`.
-- **Not managed by Boot, pinned in the parent POM:** ShedLock 7.11.0, zero-allocation-hashing 0.27ea1, RE2/J 1.8, springdoc 3.0.3, ArchUnit 1.4.1, WireMock 3.13.2, Spotless 3.12.0 (Palantir Java Format), JaCoCo 0.8.16.
+- **Not managed by Boot, pinned in the parent POM:** ShedLock 7.11.0, zero-allocation-hashing 0.27ea1 (removed in step 1d, §2.6), RE2/J 1.8, springdoc 3.0.3, ArchUnit 1.4.1, WireMock 3.13.2, Spotless 3.12.0 (Palantir Java Format), JaCoCo 0.8.16.
 
 ---
 
@@ -181,10 +181,10 @@ Reference: 05-domain-model.md (§3–§7), 03 §9.1, ADR-13 types.
 
 - [x] **1a-1 Value objects** (records with validating compact constructors): `TraceId` (32 lowercase hex, not all zeros; `toUuid()`, `fromUuid()`), `SpanId` (16 hex ↔ signed `long`; `ROOT_PARENT = "0000000000000000"` → absent), `AttributeKey` (length ≤ 255, no reserved prefix `tc.`), `AttrValue` sealed hierarchy (`StringValue`, `BoolValue`, `LongValue`, `DoubleValue` and the four array variants), `Attributes` (ordered, immutable, canonical form for hashing), `TimeRange` (half-open, `from < to`), `TraceDay`.
 - [x] **1a-2 Trace model**: `Span`, `SpanEvent`, `SpanLinkRef`, `SpanKind`, `StatusCode`, `SpanFlag` (bit layout from 04 §5.5), `TraceFragment`, `ResourceRef` and `ResourceHasher` (xxHash64 over canonical sorted attributes), `TraceSummary` with `merge(TraceSummary)` (min/max/sum/union; commutative, associative, and idempotent with respect to inserted spans — 05 §4.4).
-- [x] **1a-3 Limits**: `IngestLimits` (50 000 spans/trace, 4 KiB attribute value, 8 MiB fragment, future-timestamp threshold now + 1 day, 512-byte `value_str`).
+- [x] **1a-3 Limits**: `IngestLimits` (50 000 spans/trace, 4 KiB attribute value, 8 MiB fragment, future-timestamp threshold now + 1 day, 512-byte `value_str`); all limits are configurable defaults (§2.6).
 - [x] **1a-4 Configuration aggregates**: `KafkaConnection`, `EnrichmentSourceDefinition` (+ `TraceContextDef` sealed: `TraceparentHeader`, `RawHeader`, `PayloadPointer`; `FieldMapping`, `ValueTransform`, `FilterDef`, `ConsumerOptions`), `SourceStatus` state machine (DRAFT → ACTIVE ↔ PAUSED → DELETED) with `transitionTo(...)` returning a sealed `Transition` result, `SourceRevision`.
 - [x] **1a-5 Indexing and retention**: `IndexedAttribute` (status BACKFILLING → ACTIVE → DISABLED; `retainInDigest`, `DigestTransform`), `RetentionTiers` (`fullDays ≥ 2`, `digestDays ≥ 0`, `fullDays > max merge window`), `Tier`.
-- [x] **1a-6 Correlation**: `CorrelationType`, `CorrelationKey` (PRIMARY / ALIAS, `stepLabel`), `CorrelationRole`, `BusinessOperation`, `OperationMergePolicy` (union-find rules: survivor = earliest `first_seen`, merge window, size guard — 03 §6.3), `OutcomeRule`, `OperationOutcome`, `TraceOutcome`, `OperationOutcomeEvaluator` (§3 order of the ADR-13 addendum: outcome key → error → final step → default).
+- [x] **1a-6 Correlation**: `BusinessOperationDefinition`, `CorrelationKey` (PRIMARY / ALIAS, `stepLabel`), `CorrelationRole`, `BusinessOperation`, `OperationMergePolicy` (union-find rules: survivor = earliest `first_seen`, merge window, size guard — 03 §6.3), `OutcomeRule`, `OperationOutcome`, `TraceOutcome`, `OperationOutcomeEvaluator` (§3 order of the ADR-13 addendum: outcome key → error → final step → default).
 - [x] **1a-7 Digest**: `TraceDigest`, `BusinessOperationDigest`, `DigestStep`, `DigestValueHasher` (`SHA256` → lowercase hex; `MASK` → first 2 chars + `***`), `CompactionState` state machine (PENDING → RUNNING → DONE; FAILED → RUNNING).
 - [x] **1a-8 PII**: `PiiClass` (NONE, PERSONAL, SECRET), `PiiPolicy` (key patterns → class), `PiiMasker` (masking rules of 05 §7.3).
 - [x] **1a-9 Domain events** (internal, not Kafka): `TraceFragmentIngested`, `EnrichmentApplied`, `CorrelationObserved`, `BusinessOperationMerged`, `EnrichmentSourceActivated`, `TraceDayCompacted`, `BusinessOperationCompacted`, `PartitionDropDeferred`, `RetentionTiersChanged`.
@@ -194,8 +194,8 @@ Reference: 05-domain-model.md (§3–§7), 03 §9.1, ADR-13 types.
 ### 2.2 Step b — Domain test model (`tc-domain` test-jar, package `…testmodel.domain`)
 
 - [x] **1b-1** Test dependencies of `tc-domain`: JUnit 5, AssertJ, and jqwik or JUnit `@ParameterizedTest` for the property-style checks (commutativity, round-trips). No Spring, no Testcontainers. Policies are instantiated directly (`new OperationOutcomeEvaluator()`), which also proves they have no hidden dependencies.
-- [x] **1b-2** Builders with sensible defaults: `SpanBuilder`, `TraceFragmentBuilder`, `TraceSummaryBuilder`, `EnrichmentSourceDefinitionBuilder`, `CorrelationTypeBuilder`, `OutcomeRuleBuilder`, `IndexedAttributeBuilder`.
-- [x] **1b-3** **Object Mother `IdpScenario`** (the worked example of 06): services `idp-gateway`, `idp-auth-service`, `idp-otp-service`, `idp-token-service`; traces T1 (first factor, `user_id=u-42`, `client_id=bookstore-web`, `auth.factor=PASSWORD`, `idp.auth_session_id=as-777`), T2 (second factor, `auth.factor=SMS`, same session, `oauth.authorization_code=code-abc`), T3 (token exchange, `oauth.authorization_code=code-abc`); correlation type `idp.login` (PRIMARY `idp.auth_session_id`, ALIAS `oauth.authorization_code`, step labels `first-factor`, `second-factor`, `token-exchange`, outcome rule with `finalStepLabel = token-exchange`); enrichment source `sms-gateway.delivery-reports`.
+- [x] **1b-2** Builders with sensible defaults: `SpanBuilder`, `TraceFragmentBuilder`, `TraceSummaryBuilder`, `EnrichmentSourceDefinitionBuilder`, `BusinessOperationDefinitionBuilder`, `OutcomeRuleBuilder`, `IndexedAttributeBuilder`.
+- [x] **1b-3** **Object Mother `IdpScenario`** (the worked example of 06): services `idp-gateway`, `idp-auth-service`, `idp-otp-service`, `idp-token-service`; traces T1 (first factor, `user_id=u-42`, `client_id=bookstore-web`, `auth.factor=PASSWORD`, `idp.auth_session_id=as-777`), T2 (second factor, `auth.factor=SMS`, same session, `oauth.authorization_code=code-abc`), T3 (token exchange, `oauth.authorization_code=code-abc`); business operation definition `idp.login` (PRIMARY `idp.auth_session_id`, ALIAS `oauth.authorization_code`, step labels `first-factor`, `second-factor`, `token-exchange`, outcome rule with `finalStepLabel = token-exchange`); enrichment source `sms-gateway.delivery-reports`.
 - [x] **1b-4** **Attribute matrix**: all eight OTel attribute types, LONG > 2^53, negative zero, NaN/Infinity doubles, empty arrays, unicode, `\u0000`, 4 KiB + 1 strings.
 - [x] **1b-5** **W3C trace-context vectors**: valid, version `ff`, unknown future version with extra fields, all-zero trace id / span id, uppercase hex, wrong lengths, flags variations.
 - [x] **1b-6** **Time edge cases**: midnight-crossing traces, spans in the future, spans older than `fullDays`, nanosecond truncation cases.
@@ -213,23 +213,29 @@ Reference: 05-domain-model.md (§3–§7), 03 §9.1, ADR-13 types.
 | D-05 | `TraceSummaryMergeTest` | Merge is commutative and associative over random fragment permutations of `IdpScenario`; root detection; `service_ids` union | UC-01, UC-02 |
 | D-06 | `IngestLimitsTest` | Each limit is enforced at its boundary (exact limit passes, limit + 1 fails or truncates and sets the flag) | UC-01, UC-03 |
 | D-07 | `EnrichmentSourceDefinitionTest` | Invariants: unique target keys, reserved prefixes rejected, JSON Pointer syntax, transform arguments (RE2/J compiles) | UC-04 |
-| D-08 | `SourceStatusTransitionTest` | Every allowed transition succeeds and every forbidden one returns the expected violation | UC-05 |
+| D-08 | `EnrichmentSourceTest` | Every allowed transition succeeds and every forbidden one returns the expected violation; name and topic rules | UC-05 |
 | D-09 | `IndexedAttributeTest` | Status transitions; `retainInDigest` requires the key to be indexed; `DISABLED` with `retainInDigest` is a violation | UC-07, UC-23 |
 | D-10 | `RetentionTiersTest` | R1–R3 boundaries (`fullDays` 1 / 2, `digestDays` −1 / 0, `fullDays` vs merge window) | UC-23 |
-| D-11 | `OperationMergePolicyTest` | All orderings of 1b-7 converge to the same survivor and membership; window and size guard respected | UC-09, UC-10 |
+| D-11 | `OperationLinkerTest`, `OperationMergePolicyTest` | Specification by use case (nested groups, Given/When/Then display names, exact `LinkingResult` per run): creating (naming, provisional, chains, independent groups, duplicates), extending (widening, new values, naming once, earlier observations of the same trace), merge window (inclusive bounds both ways, reuse), merging (survivor rules, three-way, order independence), size limit (at limit, refused, per merge; growth of one operation not limited), trace counting (shared trace counted twice), idempotence and statelessness, input rules, and all IdP arrival orders across runs | UC-09, UC-10 |
 | D-12 | `OutcomeRuleTest` | Rule order 1–4 with one test per branch (SUCCESS via outcome key, FAILED via failure value, UNKNOWN for other values, FAILED via error, SUCCESS / INCOMPLETE via final step, SUCCESS without rule) | UC-21 |
 | D-13 | `DigestTransformTest` | `SHA256` output equals published SHA-256 test vectors (lowercase hex, UTF-8) for the attribute matrix; `MASK` output (PostgreSQL equality in P-23) | UC-21, UC-22 |
 | D-14 | `DigestProgressTest` | State machine transitions incl. resume (`RUNNING` with `last_chunk_end`) and `FAILED → RUNNING` | UC-21 |
 | D-15 | `SensitivityPolicyTest` | PERSONAL masked without `TC_PII`, shown with it; SECRET always masked; hashed PERSONAL shown only with `TC_PII` | UC-19 |
 | D-16 | `TraceContextSourceTest` | Parsing the W3C vectors of 1b-5 with `Traceparent.parse` and the `TraceparentHeader` / `RawHeader` / `PayloadPointer` rules (version `ff` invalid; future versions accepted by prefix) | UC-06 |
+| D-17 | `TraceTimeTest` | Epoch-nanosecond parsing and microsecond truncation; UTC trace day across midnight; `TimeRange` bounds | UC-01 |
+| D-18 | `SpanTest` | Root and end; empty name; truncation flag; `INVALID_SPAN` for broken spans and span parts | UC-01 |
+| D-19 | `AttributesTest` | Key length; enrichment-target keys; 512-entry limit; order and immutable copy; truncation | UC-01, UC-04 |
+| D-20 | `BusinessOperationDefinitionTest` | Name, merge-window bounds, keys, final step label, key and observation rules | UC-08 |
+| D-22 | `EnrichmentExtractionTest` | One event → `Enriched` / `NoTraceContext` / `Rejected`: SMS report enriches the T2 span; TRACE scope drops the span; values from payload, header, record key and timestamp; conversions and type mismatches; every transform; regex without match; missing optional vs required; value cut to the configured size | UC-06 |
+| D-21 | `BusinessOperationTest` | Provisional vs named; widening on observation; merge marking; invariants | UC-09 |
 
-- [ ] **1c-1** All tests D-01…D-16 written and failing for the right reason.
+- [x] **1c-1** All tests D-01…D-21 written and failing for the right reason (§2.6).
 
 ### 2.4 Step d — Domain implementation
 
-- [ ] **1d-1** Value objects and trace model (makes D-01…D-06 green).
-- [ ] **1d-2** Configuration aggregates and state machines (D-07…D-10, D-14, D-16).
-- [ ] **1d-3** Correlation, outcome, digest and PII policies (D-11…D-13, D-15).
+- [x] **1d-1** Value objects and trace model (makes D-01…D-06, D-17…D-19 green).
+- [x] **1d-2** Configuration aggregates and state machines (D-07…D-10, D-14, D-16).
+- [x] **1d-3** Correlation, outcome, digest and PII policies (D-11…D-13, D-15, D-20, D-21).
 
 ### 2.5 Step e — Domain gate
 
@@ -245,13 +251,39 @@ Reference: 05-domain-model.md (§3–§7), 03 §9.1, ADR-13 types.
 
 The first 1a draft (113 files) was cut to what D-01…D-16 exercise:
 
-- **Removed until the phase that needs them:** domain events; DLQ types; `KafkaConnection`, secrets and SASL types; `EnrichmentRecord`, `SourceRevision`; `ConsumerOptions`, `EventFilter`, `StartFrom`, `OnMissingTraceContext`, `PayloadFormat`; `RetentionPolicy`, `Granularity`, `RetentionTier`, `ConfigRevision`; `TraceDigest`, `BusinessOperationDigest`, `DigestStep`, `TraceOutcome`, `CompactionExclusion`; `Completeness`; `TraceFragment`, `KafkaCoordinates`; `Resource`, `InstrumentationScope`, `ServiceId`, `SpanNameId`; `CorrelationValue`, `CorrelationNode`, `CorrelationTypeStatus`; `OriginScope`, `AttributeOrigin`; wire/storage codes of `SpanKind`, `StatusCode`, `SpanFlag`; and unused methods and components (e.g. `IndexedAttribute.backfillCursor`, the digest read window).
+- **Removed until the phase that needs them:** domain events; DLQ types; `KafkaConnection`, secrets and SASL types; `EnrichmentRecord`, `SourceRevision`; `ConsumerOptions`, `EventFilter`, `StartFrom`, `OnMissingTraceContext`, `PayloadFormat`; `RetentionPolicy`, `Granularity`, `RetentionTier`, `ConfigRevision`; `TraceDigest`, `BusinessOperationDigest`, `DigestStep`, `TraceOutcome`, `CompactionExclusion`; `Completeness`; `TraceFragment`, `KafkaCoordinates`; `Resource`, `InstrumentationScope`, `ServiceId`, `SpanNameId`; `CorrelationValue`, `CorrelationNode`, `BusinessOperationDefinitionStatus`; `OriginScope`, `AttributeOrigin`; wire/storage codes of `SpanKind`, `StatusCode`, `SpanFlag`; and unused methods and components (e.g. `IndexedAttribute.backfillCursor`, the digest read window).
 - **Merged:** outcome evaluation is `OutcomeRule.evaluate(members)` (no separate evaluator); SHA-256 and masking are `DigestTransform.apply` (no `DigestValueHasher`); classification and masking are `SensitivityPolicy.sensitivityOf/displayValue` (no `PiiMasker`); `IngestLimits` no longer duplicates the 4 KiB string limit of `AttributeValue`; `RetentionTiers.requireFullDataOutlives(mergeWindow)` is the single merge-window bound; all source life-cycle errors are `INVALID_SOURCE_TRANSITION`.
 - **Still deviating from 05:** name pattern 3..63 characters; at most 50 field mappings; `Mask` keeps 0..16 characters; only enrichment targets reject reserved keys; `TimeRange` requires `from < to`; `SpanEvent` has absolute `epochNanos`; index token cap 512 bytes.
-- **Renamed for readability** (names must read correctly at the call site): `ScopeId` → `InstrumentationScopeId`; `Span.flags`/`dropped` → `collectorFlags`/`droppedByProducer`; `SpanLinkRef` → `SpanLink`; `RootInfo` → `RootSpan`; `JsonPointerExpr` → `JsonPointer`; `TraceContextExtraction` (`RawHeader`, `PayloadPointer`) → `TraceContextSource` (`TraceIdHeader`, `PayloadField`); `ExtractedTraceContext` → `TraceContext`; `SourceDefinition` → `EnrichmentSourceDefinition`; `PiiClass`/`PiiPolicy` → `Sensitivity`/`SensitivityPolicy`; `CompactionState`/`CompactionStatus` → `DigestProgress`/`DigestStatus`; `OperationForest` (`load`, `observe`, `resolve`) → `OperationLinker` (`addExisting`, `addObservation`, `link`); `ForestResolution` → `LinkingResult`; `HubBlocked` → `SizeLimitExceeded`; `RetentionTiers.fullDays` → `fullDataDays`; booleans `truncated`/`retainInDigest` → `wasTruncated`/`retainedInDigest`; `AttributeKey.reservedForEnrichment()` → `allowedAsEnrichmentTarget()`.
-- **Open for step d:** xxHash64 implementation of `ResourceHasher` (library or small pure-Java version, checked by golden values).
+- **Renamed for readability** (names must read correctly at the call site): `ScopeId` → `InstrumentationScopeId`; `Span.flags`/`dropped` → `collectorFlags`/`droppedByProducer`; `SpanLinkRef` → `SpanLink`; `RootInfo` → `RootSpan`; `JsonPointerExpr` → `JsonPointer`; `TraceContextExtraction` (`RawHeader`, `PayloadPointer`) → `TraceContextSource` (`TraceIdHeader`, `PayloadField`); `ExtractedTraceContext` → `TraceContext`; `SourceDefinition` → `EnrichmentSourceDefinition`; `PiiClass`/`PiiPolicy` → `Sensitivity`/`SensitivityPolicy`; `CompactionState`/`CompactionStatus` → `DigestProgress`/`DigestStatus`; `OperationForest` (`load`, `observe`, `resolve`) → `OperationLinker.link(LinkingInput)`; `ForestResolution` → `LinkingResult`; `HubBlocked` → `RefusedMerge`; `RetentionTiers.fullDays` → `fullDataDays`; booleans `truncated`/`retainInDigest` → `wasTruncated`/`retainedInDigest`; `AttributeKey.reservedForEnrichment()` → `allowedAsEnrichmentTarget()`.
+- **Resolved in step d:** `ResourceHasher` uses a small pure-Java xxHash64 (`XxHash64`, checked by the golden values) instead of zero-allocation-hashing, which relies on `sun.misc.Unsafe` and warns on Java 25.
 
-**Test model (`tc-domain` test-jar, package `…testmodel.domain`, 13 classes).** `DomainIds`, `TestTime` (hex ids and epoch nanos without production code), `AttributesBuilder`, `SpanBuilder`, `TraceSummaryBuilder` (with `expectedOf`, the reference summary for D-05), `BusinessOperationBuilder`, `Permutations` (all orders, seeded random chunks; no jqwik), `Violations.assertViolation`, and the data sets `IdpScenario`, `AttributeMatrix`, `TraceContextVectors`, `TimeEdgeCases`, `ArrivalOrders`. Small records (`CorrelationType`, `OutcomeRule`, `IndexedAttribute`, `EnrichmentSource`, `EnrichmentSourceDefinition`) are built with their constructors. `IdpScenario` follows 06 for step labels (`authentication`, `token-exchange`), because a label belongs to one of the type's two keys.
+**Test model (`tc-domain` test-jar, package `…testmodel.domain`, 15 classes).** `DomainIds`, `TestTime` (hex ids and epoch nanos without production code), `AttributesBuilder`, `SpanBuilder`, `TraceSummaryBuilder` (with `expectedOf`, the reference summary for D-05), `BusinessOperationBuilder`, `Permutations` (all orders, seeded random chunks; no jqwik), `Violations.assertViolation`, `Transitions.assertTransition` (one state-machine step: `Changed`/`Unchanged` or `Rejected` with its code), `InMemoryEnrichmentEvent`, and the data sets `IdpScenario`, `AttributeMatrix`, `TraceContextVectors`, `TimeEdgeCases`, `ArrivalOrders`. Small records (`BusinessOperationDefinition`, `OutcomeRule`, `IndexedAttribute`, `EnrichmentSource`, `EnrichmentSourceDefinition`) are built with their constructors. `IdpScenario` follows 06 for step labels (`authentication`, `token-exchange`), because a label belongs to one of the type's two keys.
+
+
+**Step 1c (2026-11-22).** 22 test classes (D-11 has two), 362 tests: 356 fail with `UnsupportedOperationException` or an assertion error; 6 already pass (valid JSON Pointers, which guard against an over-strict implementation). D-17…D-21 were added because documented rules of `EpochNanos`/`TraceDay`/`TimeRange`, `Span`, `AttributeKey`/`Attributes`, `BusinessOperationDefinition` and `BusinessOperation` had no test; D-08 became `EnrichmentSourceTest` (status machine plus the source's own rules), and D-11 is split into the linker and the policy. Expected values come from outside production code: xxHash64 golden ids from an independent implementation checked against the published vectors, SHA-256 from Python `hashlib`. API clarifications made while writing the tests: `ResourceHasher` encodes the type as the `AttributeType` name and sorts keys by `String.compareTo`; `DigestTransform.MASK` counts code points like PostgreSQL `left`; null keys/values of `Attributes` and broken `DroppedCounts`/`SpanEvent`/`SpanLink`/`TraceFlags` have violation codes. Limits without a code (`IngestLimits`, `OperationMergePolicy.maxTracesPerOperation`, `DigestProgress.digestedUntil`) are checked as `IllegalArgumentException`.
+
+**Configurable limits (2026-11-22).** Every size, count, length and time limit is configuration, not code: records keep only rules that never change (not null, not blank, syntax, ordering), and the limits live in records with a `DEFAULT` that the application overrides from properties (3a-3): `AttributeLimits` (key length 255, value 4 KiB, 512 entries; part of `IngestLimits`), `EnrichmentLimits` (name 63, 50 mappings, target key 128, mask 16, regex 256), `CorrelationLimits` (name 63, merge window 1 min..30 d with default 1 d, step label 64, correlation value 512, 50 outcome values of 512, deciding value 256), `OperationMergePolicy` (10 000 traces) and the digest chunk length (a `nextChunk` parameter). Each has `requireWithin(...)` that throws the same violation codes as before; `StringValue.of`/`StringArrayValue.of` and `OutcomeRule.evaluate` take their limit as a parameter; `BusinessOperationDefinition` needs an explicit merge window (the caller applies `defaultMergeWindow`). Length `CHECK` constraints in 04 §4 were removed accordingly (04 §2 principle 11). Deliberately fixed, because they are external formats or correctness rules rather than limits: W3C id and `traceparent` layout, Kafka topic-name rules (249 characters), RFC 6901 JSON Pointer syntax, UUIDv7 ids, the trace-flags byte, the name character set and minimum length, the 2-character `MASK` (must equal the SQL used for digest search), and `RetentionTiers` full data ≥ 2 days and ≥ merge window + 1 day (data must outlive digesting and linking). Tests: `AttributeLimitsTest`, `EnrichmentLimitsTest`, `CorrelationLimitsTest` (default boundaries, a raised limit accepted, broken limits rejected); 374 domain tests, 98.5 % lines, 91.3 % branches.
+
+**Accepted limitations of linking (2026-11-22).** Kept as designed, to revisit if production metrics show the need: (1) the size limit `maxTracesPerOperation` guards merges only, so an operation can still grow without bound by extension, e.g. through a correlation key that is the same on most traces (`client_id`) or a placeholder value (`"unknown"`); (2) when a merge is refused, the trace that would have caused it is left unlinked, so it and its brand-new values belong to no operation, and every later run touching these values reports the same refusal again; (3) storage keeps only the current operation of each value, so when a value was reused and a late fragment of an old trace arrives, the fragment's new values form a separate operation instead of joining the old one (the old values are left out, so the fragment never takes them from the operation that reused them). Options considered: limit all growth, a per-value trace limit ("hub" values stop linking), linking without merging, and warning in the control plane about keys already seen on many traces.
+
+**Test audit (2026-11-22).** Every class with logic was checked rule by rule against its Javadoc. Added `XxHash64Test` (published vectors and every input-length branch), `FieldReadingTest`, `TruncatedTextTest`, and missing cases in the existing classes (digest chunk cut at midnight and record rules, conversion edge cases, `traceparent` separators and non-hex fields, sensitivity pattern precedence, unsigned id order, retaining secrets hashed or masked, null and negative inputs, immutable copies). 512 domain tests; JaCoCo 99.4 % lines, 96.8 % branches; the rest are compiler-generated branches of record-pattern switches and an unreachable `default`.
+
+**Event extraction in the domain (2026-11-22).** Applying a definition to one event is domain logic: `EnrichmentSourceDefinition.extract(EnrichmentEvent, maxValueBytes)` returns the sealed `Extraction` (`Enriched(target, attributes)`, `NoTraceContext`, `Rejected(ExtractionFailure, targetKey)`), which the enricher handles with an exhaustive `switch` (rows of a poll in one transaction, rejections to the DLQ). Each `FieldMapping.read` is a fluent pipeline over the package-private `FieldReading` (read raw value → transform and cut, or convert to BOOLEAN/LONG/DOUBLE → `requiredIf`); `Transform.apply` implements every transform; `EnrichmentEvent` also gives the record key, the timestamp and payload scalars (`JsonScalar`); mappings write scalar types only (`INVALID_MAPPING`). Deviation from 03 §3.6: there is no separate extraction engine in `tc-kafka-support` and no second `TraceContext`; that module only implements `EnrichmentEvent` over a Kafka record and Jackson. `RegexExtract` compiles its pattern on every `apply`; precompiling per definition is left for when a profile shows the need. Test model: `InMemoryEnrichmentEvent` (fluent), `IdpScenario.smsDeliveryReport()`.
+
+**Trace-context sources read the event themselves (2026-11-22).** `TraceContextSource.extract(EnrichmentEvent)` replaces `parse(rawValue)`: each source reads the header or payload field it names, through the domain interface `EnrichmentEvent` (`header(name)`, `payloadText(pointer)`), so its `headerName` / `pointer` is part of the behaviour instead of data the caller has to interpret. tc-enricher implements `EnrichmentEvent` over a Kafka record and Jackson (Phase 3); the test model has `InMemoryEnrichmentEvent`. `FieldMapping` will read values the same way when the enricher needs it.
+
+**Stateless `OperationLinker` (2026-11-22).** The linker keeps no data between calls: only its fixed dependencies (`OperationMergePolicy`, id supplier) are fields, so one instance can be a shared bean. One call `link(LinkingInput)` takes what 03 §6.3 loads per run: the new observations, the earlier observations of the same traces ("siblings"), and the current live operation of each value involved; it no longer needs the member traces of every operation. Trace counts are derived from the operations' `traceCount` plus 1 for a trace not held yet (a trace held by two operations after a refused merge is counted twice: never too low). `LinkingResult` covers only the run's values; storage re-points the other values of merged operations (`UPDATE correlation_value … WHERE operation_id = ANY(:losers)`). Runs of one business operation definition must not overlap: besides the ShedLock lock (`lockAtMostFor` 5 min), the write transaction locks the `correlation_resolver_state` row (`SELECT … FOR UPDATE`), so an overrunning run cannot race the next one (Phase 2, resolver SQL).
+
+**Review fixes (2026-11-22).** A code review of `tc-domain` found, and these changes fix:
+- `OperationLinker` links the traces of a batch **one at a time**, in the order of their earliest new observation, on a working copy, exactly as if each trace came in a run of its own. So the merge window applies within one run too (the same value three days apart in one batch gives two operations, as in two runs), ids no longer depend on `HashMap` order, and the union-find `ConnectedGroups` is gone. A value outside its operation's window that the trace already carried in an earlier run was reused since and is left out, so a late fragment or replay of an old trace never takes a value away from the operation that reused it. An operation created and merged in one run is not reported. `MergeDecision` became the record `RefusedMerge`; `OperationMergePolicy.allowsMerge(count)` replaces `decideMerge`. `LinkingInput` rejects two different versions of one operation id.
+- `FieldMapping` writes a JSON number as `BigDecimal.toString()` (`1e3` → `1E+3`): `toPlainString()` expanded `1e2000000000` into two billion digits and ran out of memory.
+- `DigestProgress.finish` requires the day digested up to its end (DONE opens the drop gate); `chunkDigested` requires progress to move forward and `traces >= 0`; taking over a RUNNING day is documented and tested (keeps the chunks, `startedAt = now`).
+- `ResourceHasher` uses a length-prefixed encoding (`<UTF-8 length>:<bytes>` per text, element count per array): the separator encoding gave `[]` and `[""]`, or values containing separators, the same id. New golden ids from an independent Python xxHash64.
+- `OutcomeRule` cuts the deciding value by code points; `MemberTrace` copies its step labels; step labels and outcome values must not be blank; `BusinessOperationDefinition` rejects duplicate key ids.
+- Removed unused `RetentionTiers.DEFAULT` and `DomainViolationException.violation()` (the exception now keeps a serializable `code`); `SensitivityPolicy` compiles its patterns once; leftover "type" wording and document references in POM comments removed; 03, 04 and 05 updated where they described the old encoding, the union-find resolver and `CompactionState`.
+- 526 domain tests.
+
+**Step 1d (2026-11-22).** All 363 domain tests and the ArchUnit rule pass; JaCoCo: 98.5 % lines, 91.8 % branches. Records validate in compact constructors through `DomainViolationException.require(condition, code, message)`; the three status enums decide with `Transition.of(from, to, allowed, rejection)`; `Names.requireValid` holds the name rule shared by `EnrichmentSource` and `BusinessOperationDefinition`; `TraceId.tryParse` is the non-throwing parser used by `Traceparent` and the trace-context sources; hex is parsed strictly (`Long.parseUnsignedLong` alone would accept `+`). Behaviour decided where the tests were silent, now documented in Javadoc: of several matching `SensitivityPolicy` patterns the most sensitive class wins; `OperationLinker` treats a value seen outside its operation's merge window as a new value, and when the size limit refuses a merge it leaves the operations and the trace unlinked and reports the refusal; `BusinessOperationDefinition` replaces a missing outcome rule with `OutcomeRule.defaultRule()`.
 
 ---
 
@@ -268,11 +300,11 @@ The data layer is everything that talks to PostgreSQL or is a raw infrastructure
 - [ ] **2a-2** Database roles and grants (04 §13): `tc_owner`, `tc_migrator`, `tc_ingester`, `tc_enricher`, `tc_query`, `tc_admin`, `tc_maintenance`. Each service's test context connects with **its** role (a second `@ServiceConnection`-derived `DataSource` per role is configured by `tc-test-infra`).
 
 **Repositories (`tc-persistence`, interfaces in `…persistence.*`, all `JdbcClient`-based)**
-- [ ] **2a-3** Configuration: `KafkaConnectionRepository`, `EnrichmentSourceRepository` (+ `SourceRevisionRepository`), `AttributeKeyRepository`, `IndexedAttributeRepository`, `CorrelationTypeRepository` (+ keys, outcome rule), `RetentionPolicyRepository` (+ tiers), `CompactionExclusionRepository`, `ConfigRevisionRepository` (`bump()` in the caller's transaction), `ConfigSnapshotLoader` (one consistent snapshot).
+- [ ] **2a-3** Configuration: `KafkaConnectionRepository`, `EnrichmentSourceRepository` (+ `SourceRevisionRepository`), `AttributeKeyRepository`, `IndexedAttributeRepository`, `BusinessOperationDefinitionRepository` (+ keys, outcome rule), `RetentionPolicyRepository` (+ tiers), `CompactionExclusionRepository`, `ConfigRevisionRepository` (`bump()` in the caller's transaction), `ConfigSnapshotLoader` (one consistent snapshot).
 - [ ] **2a-4** Dictionaries and resources: `DictionaryRepository` (`service`, `span_name` with cardinality guard, `attribute_key` — insert-if-absent with `ON CONFLICT DO NOTHING RETURNING` + reselect), `ResourceRepository`, `InstrumentationScopeRepository`.
 - [ ] **2a-5** Partitions: `PartitionDdl` (create, attach, `DETACH … CONCURRENTLY`, `FINALIZE`, drop, naming `span_p2026112114`), `PartitionCatalog` (list partitions and bounds via `pg_inherits` / `pg_get_expr`).
 - [ ] **2a-6** Read side (used by `tc-query-api`, against the replica role `tc_query`): `TraceReadRepository` (summary probe over daily partitions, spans by time window, enrichments, links, correlations, digest fallback), `SearchRepository` (single/multi-predicate SQL from a `SearchPlan`, numeric ranges, keyset pagination, DIGEST-tier containment query, brute-force jsonb scan with `statement_timeout`), `CatalogRepository` (services, span names, keys, values), `BusinessOperationReadRepository` (both tiers), `RelatedTraceRepository`.
-- [ ] **2a-7** Maintenance SQL: `CorrelationResolverRepository` (watermark with gap grace, union-find steps), `BackfillRepository` (hourly chunk with `backfill_cursor`), `CompactionRepository` (chunk `INSERT … SELECT` into `trace_digest`, business-operation digest, `compaction_state` progress), `RetentionGateRepository` (drop-gate query), `DictionaryGcRepository`.
+- [ ] **2a-7** Maintenance SQL: `CorrelationResolverRepository` (watermark with gap grace, loading the linking input, writing the linking result), `BackfillRepository` (hourly chunk with `backfill_cursor`), `CompactionRepository` (chunk `INSERT … SELECT` into `trace_digest`, business-operation digest, `compaction_state` progress), `RetentionGateRepository` (drop-gate query), `DictionaryGcRepository`.
 
 **Write-side components in service modules**
 - [ ] **2a-8** `tc-ingester`: `SpanBatchWriter` (session pool `tc_ingest`, per-connection `CREATE TEMP TABLE IF NOT EXISTS … ON COMMIT DELETE ROWS`, `CopyManager.copyIn`, writable CTE with `RETURNING` → `trace_summary` upsert, side tables joined to the inserted set), `CopyTextEncoder`, `SqlStateClassifier`, `TraceDayLookup` (d−1, d, d+1 probe).
@@ -284,7 +316,7 @@ The data layer is everything that talks to PostgreSQL or is a raw infrastructure
 ### 3.2 Step b — Data test model (`tc-persistence` test-jar, `…testmodel.db` and `…testmodel.kafka`)
 
 - [ ] **2b-1** `@PersistenceIT` meta-annotation and a `PersistenceTestApplication` (test sources) wiring the repositories, the Liquibase-migrated schema and the role-specific `DataSource`s.
-- [ ] **2b-2** `DbSeed`: fluent seeding of configuration rows (connections, sources with revisions, indexed attributes incl. `retain_in_digest`, correlation types with keys and outcome rules, exclusions, tiers).
+- [ ] **2b-2** `DbSeed`: fluent seeding of configuration rows (connections, sources with revisions, indexed attributes incl. `retain_in_digest`, business operation definitions with keys and outcome rules, exclusions, tiers).
 - [ ] **2b-3** **Datasets** written through the production write components once they exist (never through hand-written INSERTs, except for the write components' own tests):
   - `IdpDataset` — T1–T3 spans, summaries, attributes, correlations, enrichment for T2;
   - `MidnightDataset` — traces crossing midnight and fragments arriving after midnight;
@@ -314,7 +346,7 @@ The data layer is everything that talks to PostgreSQL or is a raw infrastructure
 | P-13 | persistence `BruteForceSearchIT` | jsonb scan within 1 h; `statement_timeout` produces the timeout classification | UC-13 |
 | P-14 | persistence `CatalogRepositoryIT` | Services, span names, keys; value autocomplete with prefix and limit | UC-15 |
 | P-15 | persistence `BusinessOperationReadRepositoryIT` | Operation by id / by type+value across both tiers; ordered timeline with step labels | UC-14, UC-22 |
-| P-16 | persistence `CorrelationResolverRepositoryIT` | Watermark with gap grace (uncommitted lower id is not skipped); union-find steps for all orderings from 1b-7 produce identical `business_operation`/`correlation_value` state; `tc.operation_root` follows `merged_into` | UC-09, UC-10 |
+| P-16 | persistence `CorrelationResolverRepositoryIT` | Watermark with gap grace (uncommitted lower id is not skipped); linking results for all orderings from 1b-7 produce identical `business_operation`/`correlation_value` state; `tc.operation_root` follows `merged_into` | UC-09, UC-10 |
 | P-17 | persistence `BackfillRepositoryIT` | Hourly chunks write `trace_attribute` rows for a newly indexed key; resume from `backfill_cursor` | UC-07 |
 | P-18 | persistence `CompactionRepositoryIT` | Chunk SQL produces `trace_digest` rows with retained attributes (NONE/SHA256/MASK), `business_operation_id` via `operation_root`, exclusions honoured unless the trace belongs to an operation; idempotent re-run; resume after a killed chunk; business-operation digest with steps and outcome; late attribute beyond the 6 h look-ahead not captured | UC-21 |
 | P-19 | kafka-support `KafkaClientPropertiesBuilderIT` | Allow-list rejects forbidden properties; secrets resolved from WireMock-backed Vault; a consumer built from the properties reads from `foreignKafka` | UC-04 |
@@ -370,10 +402,24 @@ Application services orchestrate domain and data components. Tests call them **d
 | | `CursorCodec`, `PiiResponseMasker` | HMAC cursor encode/verify; masking of DTOs |
 | tc-control-plane | `KafkaConnectionAdminService` (+ `ConnectionTester`) | create/update/test (Admin `describeTopics`, no side effects) |
 | | `EnrichmentSourceAdminService` | create/update (new revision), activate/pause/delete, `DryRunResult test(id, sample)`, `PreviewResult preview(id, limit)` (assign + seek, no group, no topics) |
-| | `IndexedAttributeAdminService`, `CorrelationTypeAdminService`, `RetentionTierAdminService`, `CompactionExclusionAdminService` | validation codes from 03 §5.4 and §5.9; outcome-key auto-retain |
+| | `IndexedAttributeAdminService`, `BusinessOperationDefinitionAdminService`, `RetentionTierAdminService`, `CompactionExclusionAdminService` | validation codes from 03 §5.4 and §5.9; outcome-key auto-retain |
 
 - [ ] **3a-1** Interfaces, command/result records and sealed result types written with Javadoc; error codes enumerated per service.
 - [ ] **3a-2** `Caller` abstraction (subject, roles, `TC_PII` scope) defined so services are testable without HTTP.
+- [ ] **3a-3** Configurable limits: `@ConfigurationProperties` (`tc.limits.ingest.*`, `tc.limits.enrichment.*`, `tc.limits.correlation.*`, `tc.maintenance.digest.chunk-length`, `tc.correlation.max-traces-per-operation`) bound to the domain records `IngestLimits`/`AttributeLimits`, `EnrichmentLimits`, `CorrelationLimits`, `OperationMergePolicy`, defaulting to their `DEFAULT`; validated at startup (the records reject non-positive values; `maxIndexValueBytes` below the B-tree entry ceiling, 04 §2 principle 11). The domain does not enforce these limits by itself: every entry point below must apply them, and A-21 proves each one does.
+
+  | Module | Entry point | Limit applied |
+  |---|---|---|
+  | tc-ingester | `TraceMessageParser` | `maxFragmentBytes` |
+  | | `SpanNormalizer` (span, event, link, resource, scope attributes) | `AttributeLimits.requireWithin`; strings cut by `StringValue.of(raw, maxValueBytes)`; `judgeSpanStart` with `futureTolerance` |
+  | | `IngestPipeline` | `spansToStore` (`maxSpansPerTrace`) |
+  | | `AttributeIndexer` | `truncateIndexValue` (`maxIndexValueBytes`) |
+  | | `CorrelationExtractor` | `CorrelationLimits.requireWithin(observation)` |
+  | tc-enricher | `EnrichmentProcessor` | `definition.extract(event, maxValueBytes)` cuts mapped strings; `CorrelationLimits.requireWithin(observation)` for enrichment-sourced values |
+  | tc-control-plane | `EnrichmentSourceAdminService` create / update / rename | `EnrichmentLimits.requireWithin(source)` and `requireWithin(definition)` |
+  | | `BusinessOperationDefinitionAdminService` create / update | `defaultMergeWindow` applied when absent; `CorrelationLimits.requireWithin(type)` |
+  | tc-maintenance | `CorrelationResolverService` | `OperationMergePolicy(maxTracesPerOperation)` |
+  | | `DigestCompactionService` | `nextChunk(chunkLength)`; `evaluate(members, maxDecidingValueLength)` |
 
 ### 4.2 Step b — Application test model
 
@@ -407,6 +453,7 @@ Application services orchestrate domain and data components. Tests call them **d
 | A-18 | control-plane `PreviewAndDryRunIT` | Dry-run extracts the expected trace id and fields; preview reads the last N records from `foreignKafka`; **no consumer group and no topic created** (Admin before/after) | UC-04 |
 | A-19 | control-plane `ConnectionTesterIT` | Reachable / unreachable cluster / missing topic / bad credentials (WireMock Vault 403) | UC-04 |
 | A-20 | control-plane `RetentionAndDigestAdminIT` | Tier validation R1–R3; retained key auto-creates the indexed attribute; PERSONAL `NONE` needs `acknowledgePii`; SECRET `NONE` refused; outcome rule O1–O5 with auto-retain of `outcomeKey`; exclusions CRUD | UC-07, UC-08, UC-23 |
+| A-21 | `ConfiguredLimitsIT` in each of ingester, enricher, control-plane, maintenance | The context starts with every limit of the module lowered by properties; each entry point of the 3a-3 table rejects or cuts input one above the lowered limit with the expected code or flag, and accepts input exactly at it. A missing `requireWithin`, or a service reading `DEFAULT` instead of the configured value, fails this test | UC-01, UC-04, UC-08, UC-21 |
 
 - [ ] **3c-1** All A-xx tests written and failing for the right reason.
 
@@ -421,6 +468,7 @@ Application services orchestrate domain and data components. Tests call them **d
 ### 4.5 Step e — Application gate
 
 - [ ] All A-xx, P-xx and D-xx tests green.
+- [ ] Every entry point of the 3a-3 limits table is exercised by A-21.
 - [ ] Every main success scenario and alternative flow of UC-01…UC-23 that does not depend on Kafka listeners, schedulers or HTTP is covered by at least one A-xx test (traceability in §9).
 
 ---
@@ -484,7 +532,7 @@ Reference: 03 §4.3–§4.4, §4.10–§4.13, §5.3–§5.9; 06 example JSON; 02
 
 ### 6.1 Step a — Design (API first)
 
-- [ ] **5a-1** Write the OpenAPI 3.1 documents by hand **before** the controllers: `api/query-api.yaml` (`/api/v1/traces/{traceId}`, `/traces/search`, `/traces/{traceId}/related`, `/search/attributes`, `/search/attributes/{key}/values`, `/services`, `/services/{service}/span-names`, `/business-operations`, `/business-operations/{id}`) and `api/control-plane.yaml` (`/api/v1/admin/kafka-connections`, `/enrichment-sources` incl. `activate`, `pause`, `test`, `preview`, `/indexed-attributes`, `/correlation-types`, `/retention-policies` incl. `/tiers`, `/compaction-exclusions`, `/compaction-state`). Include every DTO field (`tier`, `spansExpired`, `warnings`, `nextCursor`, …) and the examples from 06.
+- [ ] **5a-1** Write the OpenAPI 3.1 documents by hand **before** the controllers: `api/query-api.yaml` (`/api/v1/traces/{traceId}`, `/traces/search`, `/traces/{traceId}/related`, `/search/attributes`, `/search/attributes/{key}/values`, `/services`, `/services/{service}/span-names`, `/business-operations`, `/business-operations/{id}`) and `api/control-plane.yaml` (`/api/v1/admin/kafka-connections`, `/enrichment-sources` incl. `activate`, `pause`, `test`, `preview`, `/indexed-attributes`, `/business-operation-definitions`, `/retention-policies` incl. `/tiers`, `/compaction-exclusions`, `/compaction-state`). Include every DTO field (`tier`, `spansExpired`, `warnings`, `nextCursor`, …) and the examples from 06.
 - [ ] **5a-2** ProblemDetail catalogue (RFC 9457): `type` URIs (`/problems/non-indexed-attribute`, `/problems/window-too-large`, `/problems/query-timeout` (503 + `Retry-After`), `/problems/cursor-mismatch`, `/problems/pii-scope-required`, `/problems/trace-not-found`, `/problems/digest-transform-change`, `/problems/retained-key-must-be-indexed`, validation `400` with field-level codes).
 - [ ] **5a-3** Security model: JWT resource server (issuer from WireMock in tests), roles `TC_VIEWER`, `TC_ADMIN`, scope `TC_PII`; endpoint → role matrix.
 - [ ] **5a-4** Controller interfaces generated from or checked against the OpenAPI documents (decide in this step; if not generated, a contract test compares springdoc's output with the hand-written document).
@@ -507,7 +555,7 @@ Reference: 03 §4.3–§4.4, §4.10–§4.13, §5.3–§5.9; 06 example JSON; 02
 | R-06 | query `SecurityIT` | 401 without token / expired / wrong issuer; 403 for missing role; PII masked without `TC_PII`; PREFIX/autocomplete on PII keys → 403 `pii-scope-required` | UC-19 |
 | R-07 | control-plane `KafkaConnectionEndpointIT` | CRUD + `test` with WireMock Vault and `foreignKafka` | UC-04 |
 | R-08 | control-plane `EnrichmentSourceEndpointIT` | CRUD, activate/pause, validation codes, `test` and `preview` responses | UC-04, UC-05 |
-| R-09 | control-plane `IndexAndCorrelationEndpointIT` | Indexed attributes (incl. `retainInDigest`, `digestTransform`, 409 cases), correlation types with `outcomeRule` | UC-07, UC-08, UC-23 |
+| R-09 | control-plane `IndexAndCorrelationEndpointIT` | Indexed attributes (incl. `retainInDigest`, `digestTransform`, 409 cases), business operation definitions with `outcomeRule` | UC-07, UC-08, UC-23 |
 | R-10 | control-plane `RetentionEndpointIT` | `GET/PUT /retention-policies/tiers` validation; exclusions CRUD; `compaction-state` | UC-16, UC-23 |
 | R-11 | control-plane `AdminSecurityIT` | Only `TC_ADMIN` can write; viewers get 403 | UC-19 |
 | R-12 | both `OpenApiContractIT` | The served `/v3/api-docs` matches the hand-written OpenAPI documents (no undocumented or missing operations/fields) | — |
@@ -534,7 +582,7 @@ Reference: 03 §4.3–§4.4, §4.10–§4.13, §5.3–§5.9; 06 example JSON; 02
 The Java rules T1–T12 do not apply to the TypeScript code. The same spirit does: no hand-written fake services. **The backend is mocked with WireMock** (rule T4), using stubs derived from the OpenAPI examples. The final journeys run against the real stack (Phase 7).
 
 ### 7.1 Step a — Design
-- [ ] **6a-1** Routes and pages per 03 §8.2: Search, Trace view (waterfall, span details, enrichment panel, related traces, DIGEST banner), Business operation timeline (tier badge, outcome), Admin (connections, enrichment source editor with test/preview, indexed attributes with retain/transform, correlation types with outcome-rule editor, retention tiers, exclusions, compaction state).
+- [ ] **6a-1** Routes and pages per 03 §8.2: Search, Trace view (waterfall, span details, enrichment panel, related traces, DIGEST banner), Business operation timeline (tier badge, outcome), Admin (connections, enrichment source editor with test/preview, indexed attributes with retain/transform, business operation definitions with outcome-rule editor, retention tiers, exclusions, compaction state).
 - [ ] **6a-2** TypeScript API client generated from the Phase-5 OpenAPI documents; OIDC (Authorization Code + PKCE) flow design.
 
 ### 7.2 Step b — Test model
@@ -578,14 +626,14 @@ The Java rules T1–T12 do not apply to the TypeScript code. The same spirit doe
 
 | UC | Domain | Data | Application | Messaging | REST | UI / E2E |
 |---|---|---|---|---|---|---|
-| UC-01 Ingest fragments | D-01…D-06 | P-04, P-07, P-09, P-21, P-23 | A-01, A-02, A-04, A-05 | M-01, M-06 | — | 7-3 |
+| UC-01 Ingest fragments | D-01…D-06 | P-04, P-07, P-09, P-21, P-23 | A-01, A-02, A-04, A-05, A-21 | M-01, M-06 | — | 7-3 |
 | UC-02 Idempotent replay | D-05 | P-07 | A-03 | M-04 | — | 7-6 |
 | UC-03 Poison → DLQ | D-06 | P-08, P-22 | A-01, A-04 | M-02 | — | — |
-| UC-04 Register connection & source | D-07 | P-03, P-19, P-20 | A-17, A-18, A-19 | — | R-07, R-08 | 6c-1 |
+| UC-04 Register connection & source | D-07 | P-03, P-19, P-20 | A-17, A-18, A-19, A-21 | — | R-07, R-08 | 6c-1 |
 | UC-05 Source lifecycle | D-08 | P-03 | A-08, A-17 | M-07, M-09, M-11 | R-08 | 6c-1 |
 | UC-06 Enrich trace | D-16 | P-10 | A-07 | M-08, M-10 | — | 7-4 |
 | UC-07 Indexed attribute + backfill | D-09 | P-17 | A-06, A-11, A-20 | — | R-09 | 6c-1 |
-| UC-08 Correlation type | D-11 | P-03 | A-20 | — | R-09 | 6c-1 |
+| UC-08 Business operation definition | D-11 | P-03 | A-20, A-21 | — | R-09 | 6c-1 |
 | UC-09 Link into business operation | D-11 | P-16 | A-10 | — | — | 7-4 |
 | UC-10 Merge via alias keys | D-11 | P-16 | A-10 | — | — | — |
 | UC-11 Trace by id | — | P-11 | A-13 | — | R-01 | 6c-1 |
@@ -598,7 +646,7 @@ The Java rules T1–T12 do not apply to the TypeScript code. The same spirit doe
 | UC-18 Replay from Kafka | — | — | A-03 | M-05 | — | — |
 | UC-19 Access control & PII | D-15 | P-02 | A-13 | — | R-06, R-11 | 6c-1 |
 | UC-20 Related traces | — | P-11 | A-16 | — | R-05 | — |
-| UC-21 Compaction | D-12…D-14 | P-06, P-18, P-23 | A-12 | M-12, M-13 | — | 7-5 |
+| UC-21 Compaction | D-12…D-14 | P-06, P-18, P-23 | A-12, A-21 | M-12, M-13 | — | 7-5 |
 | UC-22 Query DIGEST tier | D-13 | P-11, P-12, P-15, P-23 | A-13…A-15 | — | R-01, R-02, R-04 | 6c-1, 7-5 |
 | UC-23 Configure tiers, retained keys, outcome rules | D-09, D-10, D-12 | P-03 | A-20 | — | R-09, R-10 | 6c-1 |
 
@@ -614,8 +662,8 @@ The Java rules T1–T12 do not apply to the TypeScript code. The same spirit doe
 **Phase 1 — Domain**
 - [x] 1a Interfaces and API designed and reviewed (1a-1…1a-11) — §2.6, trimmed
 - [x] 1b Domain test model ready (1b-1…1b-8) — §2.6
-- [ ] 1c Tests D-01…D-16 red
-- [ ] 1d Implementation green
+- [x] 1c Tests D-01…D-21 red
+- [x] 1d Implementation green
 - [ ] 1e Gate passed
 
 **Phase 2 — Data**
@@ -628,7 +676,7 @@ The Java rules T1–T12 do not apply to the TypeScript code. The same spirit doe
 **Phase 3 — Application**
 - [ ] 3a Service interfaces designed (3a-1, 3a-2)
 - [ ] 3b Application test model ready, golden starter messages committed (3b-1…3b-5)
-- [ ] 3c Tests A-01…A-20 red
+- [ ] 3c Tests A-01…A-21 red
 - [ ] 3d Implementation green (3d-1…3d-5)
 - [ ] 3e Gate passed
 

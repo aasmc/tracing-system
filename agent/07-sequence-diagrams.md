@@ -581,7 +581,7 @@ sequenceDiagram
     PG-->>CR: row 9001
     CR->>PG: SELECT correlation_value WHERE (1, 'as-777'), other observations of T1 of type 1
     PG-->>CR: none
-    CR->>CR: union-find component values as-777, traces T1, no existing operation
+    CR->>CR: link T1: its value as-777 has no operation
     CR->>PG: INSERT business_operation (uuidv7 0193a6f2..., first_seen 09:15:02.130Z, display_value as-777, trace_count 1)
     CR->>PG: INSERT correlation_value (1, as-777, 0193a6f2..., first_seen)
     CR->>PG: UPDATE correlation_resolver_state SET last_processed_id = 9001, COMMIT
@@ -823,7 +823,7 @@ sequenceDiagram
 
     AN->>UI: lookup idp.login, value as-777 (from support ticket)
     UI->>BO: GET /api/v1/business-operations?type=idp.login&value=as-777&from&to
-    BO->>PGR: SELECT id FROM correlation_type WHERE name = 'idp.login'
+    BO->>PGR: SELECT id FROM business_operation_definition WHERE name = 'idp.login'
     BO->>PGR: SELECT operation_id, operation_first_seen FROM correlation_value WHERE (1, 'as-777')
     alt not found
         BO->>PGR: EXISTS trace_correlation (1, as-777) with id > last_processed_id ?
@@ -992,7 +992,7 @@ sequenceDiagram
 **Explanation.** The UI keeps two kinds of relation apart:
 
 - **causal** relations from native OTel span links, indexed in both directions by `span_link`;
-- **business** relations from correlation types.
+- **business** relations from business operation definitions.
 
 The incoming-link query relies on the `(linked_trace_id)` index of each daily partition. Hints narrow the partitions probed.
 
@@ -1196,7 +1196,7 @@ sequenceDiagram
     UI->>BO: GET /api/v1/business-operations?type=idp.login&value=as-777&outcome=SUCCESS&from&to
     BO->>PGR: correlation_value (1, as-777) in FULL tier
     PGR-->>BO: none
-    BO->>PGR: SELECT FROM business_operation_digest WHERE correlation_type_id=1 AND display_value='as-777' AND outcome=1
+    BO->>PGR: SELECT FROM business_operation_digest WHERE operation_definition_id=1 AND display_value='as-777' AND outcome=1
     PGR-->>BO: 0193a6f2 (tier DIGEST)
     BO-->>UI: 200 [operation, outcome SUCCESS]
     UI->>BO: GET /api/v1/business-operations/0193a6f2-6c1e-7b3a-9f10-2d4c5e6f7a80
@@ -1232,7 +1232,7 @@ sequenceDiagram
     ADM->>UI: Retention tiers form: fullDays 7, digestDays 90
     UI->>CP: PUT /api/v1/admin/retention-policies/tiers {fullDays 7, digestDays 90}
     CP->>CP: RetentionTiers: fullDays >= 2, digestDays >= 0
-    CP->>PG: SELECT max(merge_window) FROM correlation_type (idp.login PT24H = 1 d)
+    CP->>PG: SELECT max(merge_window) FROM business_operation_definition (idp.login PT24H = 1 d)
     CP->>CP: fullDays 7 > 1 d: ok
     alt invalid
         CP-->>UI: 400 FULL_DAYS_TOO_SMALL / FULL_DAYS_BELOW_MERGE_WINDOW / INVALID_DIGEST_DAYS
@@ -1258,16 +1258,16 @@ sequenceDiagram
     CP->>PG: INSERT attribute_key, INSERT indexed_attribute (BACKFILLING, retain_in_digest true), config_revision +1
     CP-->>UI: 201 BACKFILLING (backfill as SD-09)
 
-    ADM->>UI: Correlation type idp.login, outcome rule finalStepLabel token-exchange
-    UI->>CP: PUT /api/v1/admin/correlation-types/1 {..., outcomeRule {finalStepLabel token-exchange}}
-    CP->>CP: CorrelationType + OutcomeRule invariants: token-exchange is the step label of oauth.authorization_code
+    ADM->>UI: Business operation definition idp.login, outcome rule finalStepLabel token-exchange
+    UI->>CP: PUT /api/v1/admin/business-operation-definitions/1 {..., outcomeRule {finalStepLabel token-exchange}}
+    CP->>CP: BusinessOperationDefinition + OutcomeRule invariants: token-exchange is the step label of oauth.authorization_code
     alt unknown step label or outcomeKey not indexed
         CP-->>UI: 400 UNKNOWN_STEP_LABEL or OUTCOME_KEY_NOT_INDEXED
     else valid
-        CP->>PG: UPDATE correlation_type SET outcome_rule = finalStepLabel token-exchange
+        CP->>PG: UPDATE business_operation_definition SET outcome_rule = finalStepLabel token-exchange
         CP->>PG: UPDATE config_revision +1, COMMIT
         CP->>AUD: audit (outcome rule changed)
-        CP-->>UI: 200 correlation type with outcomeRule
+        CP-->>UI: 200 business operation definition with outcomeRule
     end
 
     Note over DC,PM: prospective only, days already DONE are never re-compacted

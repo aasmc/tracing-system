@@ -10,7 +10,7 @@
 
     <artifactId>tc-persistence</artifactId>
     <name>tc-persistence</name>
-    <description>JDBC repositories, config snapshot loader, partition DDL, SchemaVersionGuard (03 §9.1)</description>
+    <description>JDBC repositories, config snapshot loader, partition DDL, SchemaVersionGuard</description>
 
     <dependencies>
         <dependency>

@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.OptionalDouble;
 import java.util.function.Supplier;
 import ru.aasmc.tracing.collector.domain.ViolationCode;
+import ru.aasmc.tracing.collector.domain.attribute.AttributeLimits;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeType;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeValue;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeValue.BoolArrayValue;
@@ -23,7 +24,7 @@ import ru.aasmc.tracing.collector.domain.attribute.AttributeValue.StringValue;
  */
 public final class AttributeMatrix {
 
-    public static final int LIMIT = AttributeValue.MAX_STRING_BYTES;
+    public static final int LIMIT = AttributeLimits.DEFAULT.maxValueBytes();
 
     /** 2^53 + 1: the smallest positive long that a {@code double} cannot represent. */
     public static final long ABOVE_DOUBLE_PRECISION = 9_007_199_254_740_993L;
@@ -91,19 +92,19 @@ public final class AttributeMatrix {
                 rejected("double -Infinity", () -> new DoubleValue(Double.NEGATIVE_INFINITY)),
                 array(
                         "string array",
-                        () -> StringArrayValue.of(List.of("a", "b")),
+                        () -> StringArrayValue.of(List.of("a", "b"), LIMIT),
                         new StringArrayValue(List.of("a", "b"), false),
                         List.of("a", "b"),
                         false),
                 array(
                         "string array with a 4 KiB + 1 element",
-                        () -> StringArrayValue.of(List.of("ok", fourKiBPlusOne)),
+                        () -> StringArrayValue.of(List.of("ok", fourKiBPlusOne), LIMIT),
                         new StringArrayValue(List.of("ok", fourKiB), true),
                         List.of("ok", fourKiB),
                         true),
                 array(
                         "string array empty",
-                        () -> StringArrayValue.of(List.of()),
+                        () -> StringArrayValue.of(List.of(), LIMIT),
                         new StringArrayValue(List.of(), false),
                         List.of(),
                         false),
@@ -167,7 +168,7 @@ public final class AttributeMatrix {
     private static AttributeCase string(String name, String raw, String stored, boolean wasTruncated) {
         return new AttributeCase(
                 name,
-                () -> StringValue.of(raw),
+                () -> StringValue.of(raw, LIMIT),
                 new Expectation.Valid(
                         new StringValue(stored, wasTruncated),
                         AttributeType.STRING,
