@@ -22,12 +22,7 @@ import ru.aasmc.tracing.testinfra.TcIntegrationTest;
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
-@TcIntegrationTest(
-        properties = {
-            TcContainersConfiguration.POSTGRES_SERVICE_CONNECTION_PROPERTY + "=false",
-            // the real master changelog plus throw-away convention checks (test resources)
-            "spring.liquibase.change-log=classpath:db/spike/spike-master.yaml"
-        })
+@TcIntegrationTest(properties = TcContainersConfiguration.POSTGRES_SERVICE_CONNECTION_PROPERTY + "=false")
 @Import(MigratorIT.MigratorDataSource.class)
 public @interface MigratorIT {
 

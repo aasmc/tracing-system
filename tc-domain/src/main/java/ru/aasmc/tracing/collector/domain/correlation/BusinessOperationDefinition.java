@@ -4,6 +4,7 @@ import static ru.aasmc.tracing.collector.domain.DomainViolationException.require
 
 import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
 import ru.aasmc.tracing.collector.domain.Names;
 import ru.aasmc.tracing.collector.domain.ViolationCode;
 
@@ -26,7 +27,7 @@ import ru.aasmc.tracing.collector.domain.ViolationCode;
  * <p>Each {@link BusinessOperation} belongs to one definition, and operations of different definitions never merge.
  *
  * <p>Rules: {@code name} follows {@link Names} ({@code INVALID_NAME}); {@code mergeWindow} is positive
- * ({@code INVALID_MERGE_WINDOW}); at least one PRIMARY key, no key id twice and no attribute twice
+ * ({@code INVALID_MERGE_WINDOW}); an id, at least one PRIMARY key, no key id twice and no attribute twice
  * ({@code INVALID_OPERATION_DEFINITION});
  * the outcome rule's {@code finalStepLabel}, if set, is the step label of one of the keys ({@code UNKNOWN_STEP_LABEL});
  * keys are an immutable copy, in the order their steps happen. Name length, merge-window bounds and the sizes of keys and outcome
@@ -40,7 +41,7 @@ import ru.aasmc.tracing.collector.domain.ViolationCode;
  * @param outcomeRule the outcome rule, or {@code null} for {@link OutcomeRule#defaultRule()}
  */
 public record BusinessOperationDefinition(
-        int id, String name, Duration mergeWindow, List<CorrelationKey> keys, OutcomeRule outcomeRule) {
+        UUID id, String name, Duration mergeWindow, List<CorrelationKey> keys, OutcomeRule outcomeRule) {
 
     public BusinessOperationDefinition {
         Names.requireValid(name);
@@ -49,6 +50,7 @@ public record BusinessOperationDefinition(
                 ViolationCode.INVALID_MERGE_WINDOW,
                 "merge window is not positive: " + mergeWindow);
         keys = List.copyOf(keys);
+        require(id != null, ViolationCode.INVALID_OPERATION_DEFINITION, "definition " + name + " has no id");
         require(
                 keys.stream().anyMatch(key -> key.role() == KeyRole.PRIMARY),
                 ViolationCode.INVALID_OPERATION_DEFINITION,

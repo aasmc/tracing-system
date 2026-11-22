@@ -12,8 +12,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import ru.aasmc.tracing.collector.domain.ViolationCode;
 import ru.aasmc.tracing.collector.testmodel.domain.DomainIds;
+import ru.aasmc.tracing.collector.testmodel.domain.IdpScenario;
 
 class BusinessOperationTest {
+
+    private static final UUID DEFINITION = IdpScenario.DEFINITION_ID;
 
     private static final Instant FIRST = Instant.parse("2026-11-21T09:00:00Z");
     private static final Instant LAST = FIRST.plus(Duration.ofHours(1));
@@ -66,7 +69,7 @@ class BusinessOperationTest {
                 () -> anOperation().id(id).build().markMergedInto(id));
         assertViolation(
                 ViolationCode.INVALID_BUSINESS_OPERATION,
-                () -> new BusinessOperation(id, FIRST, FIRST, 1, "as-777", 1, id));
+                () -> new BusinessOperation(id, FIRST, FIRST, DEFINITION, "as-777", 1, id));
         assertViolation(
                 ViolationCode.INVALID_BUSINESS_OPERATION,
                 () -> anOperation().seen(LAST, FIRST).build());
@@ -79,17 +82,21 @@ class BusinessOperationTest {
     }
 
     @Test
-    @DisplayName("an operation has an id and both seen times")
-    void given_missingIdOrTime_when_constructed_then_invalidBusinessOperation() {
+    @DisplayName("an operation has an id, a definition and both seen times")
+    void given_missingIdDefinitionOrTime_when_constructed_then_invalidBusinessOperation() {
         UUID id = ids.get();
 
         assertViolation(
                 ViolationCode.INVALID_BUSINESS_OPERATION,
-                () -> new BusinessOperation(null, FIRST, LAST, 1, "x", 1, null));
-        assertViolation(
-                ViolationCode.INVALID_BUSINESS_OPERATION, () -> new BusinessOperation(id, null, LAST, 1, "x", 1, null));
+                () -> new BusinessOperation(null, FIRST, LAST, DEFINITION, "x", 1, null));
         assertViolation(
                 ViolationCode.INVALID_BUSINESS_OPERATION,
-                () -> new BusinessOperation(id, FIRST, null, 1, "x", 1, null));
+                () -> new BusinessOperation(id, FIRST, LAST, null, "x", 1, null));
+        assertViolation(
+                ViolationCode.INVALID_BUSINESS_OPERATION,
+                () -> new BusinessOperation(id, null, LAST, DEFINITION, "x", 1, null));
+        assertViolation(
+                ViolationCode.INVALID_BUSINESS_OPERATION,
+                () -> new BusinessOperation(id, FIRST, null, DEFINITION, "x", 1, null));
     }
 }

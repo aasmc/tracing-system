@@ -10,18 +10,23 @@ spring:
     liquibase-schema: tc             # databasechangelog / databasechangeloglock live in tc (schema pre-created by IaC)
     analytics-enabled: false         # Liquibase 5 sends anonymous usage analytics unless disabled
     parameters:
-      fullDays: ${tc.retention.full-days}
+      fullDataDays: ${tc.retention.full-data-days}
       digestDays: ${tc.retention.digest-days}
+      initialCompactionExclusions: ${tc.compaction.initial-exclusions}
   datasource:
     url: jdbc:postgresql://tc-pg-primary:5432/tracing
     username: tc_migrator
     password: ${TC_MIGRATOR_PASSWORD:}
     hikari:
       maximum-pool-size: 2
-      connection-init-sql: SET ROLE tc_owner   # every object is owned by tc_owner (04 §4)
+      connection-init-sql: SET ROLE tc_owner   # every object, including Liquibase's own tables, is owned by tc_owner
 tc:
   migrator:
     ensure-partitions: true
-  retention:                   # seed values only (changelog 005); at runtime use PUT /retention-policies/tiers
-    full-days: 7
+  retention:                   # seed the first installation only; afterwards the control plane owns retention
+    full-data-days: 7
     digest-days: 90
+  compaction:
+    # comma-separated SQL LIKE patterns on root span names that are never digested, set at installation only;
+    # they depend on the clients' instrumentation and actuator path, e.g. "http get /actuator/%"
+    initial-exclusions: ""

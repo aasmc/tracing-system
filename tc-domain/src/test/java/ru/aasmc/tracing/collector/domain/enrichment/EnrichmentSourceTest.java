@@ -3,6 +3,7 @@ package ru.aasmc.tracing.collector.domain.enrichment;
 import static org.assertj.core.api.Assertions.assertThat;
 import static ru.aasmc.tracing.collector.testmodel.domain.Violations.assertViolation;
 
+import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -12,6 +13,11 @@ import ru.aasmc.tracing.collector.domain.ViolationCode;
 import ru.aasmc.tracing.collector.testmodel.domain.Transitions;
 
 class EnrichmentSourceTest {
+
+    private static final EnrichmentSourceId SOURCE_ID =
+            new EnrichmentSourceId(UUID.fromString("00000000-0000-0000-0000-00000000e001"));
+    private static final KafkaConnectionId CONNECTION_ID =
+            new KafkaConnectionId(UUID.fromString("00000000-0000-0000-0000-00000000f001"));
 
     private static final String NAME = "sms-gateway.delivery-reports";
     private static final String TOPIC = "sms.Delivery_Reports-1";
@@ -72,7 +78,7 @@ class EnrichmentSourceTest {
     }
 
     private static EnrichmentSource source(String name, String topic, SourceStatus status) {
-        return new EnrichmentSource(new EnrichmentSourceId(1), name, new KafkaConnectionId(1), topic, status);
+        return new EnrichmentSource(SOURCE_ID, name, CONNECTION_ID, topic, status);
     }
 
     @Test

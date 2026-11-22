@@ -12,7 +12,8 @@ import ru.aasmc.tracing.collector.domain.ViolationCode;
  * <p>An operation is <em>provisional</em> while it has no display value (only alias values were seen so far) and
  * <em>merged</em> once another operation absorbed it; a merged operation is never un-merged.
  *
- * <p>Rules ({@code INVALID_BUSINESS_OPERATION}): {@code id} is a version-7 UUID; {@code firstSeen <= lastSeen};
+ * <p>Rules ({@code INVALID_BUSINESS_OPERATION}): {@code id} is a version-7 UUID; the definition is set;
+ * {@code firstSeen <= lastSeen};
  * {@code traceCount >= 0}; an operation is never merged into itself.
  *
  * @param id time-ordered id
@@ -27,7 +28,7 @@ public record BusinessOperation(
         UUID id,
         Instant firstSeen,
         Instant lastSeen,
-        int operationDefinitionId,
+        UUID operationDefinitionId,
         String displayValue,
         int traceCount,
         UUID mergedInto) {
@@ -39,6 +40,10 @@ public record BusinessOperation(
                 id != null && id.version() == TIME_ORDERED_UUID_VERSION,
                 ViolationCode.INVALID_BUSINESS_OPERATION,
                 "operation id is not a version-7 UUID: " + id);
+        require(
+                operationDefinitionId != null,
+                ViolationCode.INVALID_BUSINESS_OPERATION,
+                "operation " + id + " has no definition");
         require(
                 firstSeen != null && lastSeen != null && !firstSeen.isAfter(lastSeen),
                 ViolationCode.INVALID_BUSINESS_OPERATION,

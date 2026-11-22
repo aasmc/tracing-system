@@ -1,0 +1,196 @@
+attribute_key.id integer NOT NULL
+attribute_key.key text NOT NULL
+attribute_key.value_type text NOT NULL
+attribute_key.first_seen timestamp with time zone NOT NULL
+business_operation.first_seen timestamp with time zone NOT NULL
+business_operation.last_seen timestamp with time zone NOT NULL
+business_operation.id uuid NOT NULL
+business_operation.merged_into uuid
+business_operation.operation_definition_id uuid NOT NULL
+business_operation.trace_count integer NOT NULL
+business_operation.display_value text NOT NULL
+business_operation_definition.id uuid NOT NULL
+business_operation_definition.name text NOT NULL
+business_operation_definition.description text
+business_operation_definition.merge_window interval NOT NULL
+business_operation_definition.status text NOT NULL
+business_operation_definition.outcome_rule jsonb
+business_operation_digest.first_seen timestamp with time zone NOT NULL
+business_operation_digest.last_seen timestamp with time zone NOT NULL
+business_operation_digest.compacted_at timestamp with time zone NOT NULL
+business_operation_digest.operation_id uuid NOT NULL
+business_operation_digest.operation_definition_id uuid NOT NULL
+business_operation_digest.op_day date NOT NULL
+business_operation_digest.trace_count integer NOT NULL
+business_operation_digest.outcome smallint NOT NULL
+business_operation_digest.display_value text NOT NULL
+business_operation_digest.outcome_detail text
+business_operation_digest.steps jsonb NOT NULL
+business_operation_digest.attributes jsonb NOT NULL
+compaction_exclusion.id uuid NOT NULL
+compaction_exclusion.service_name text
+compaction_exclusion.root_name_pattern text NOT NULL
+compaction_exclusion.description text
+compaction_exclusion.created_by text NOT NULL
+compaction_exclusion.created_at timestamp with time zone NOT NULL
+compaction_state.trace_day date NOT NULL
+compaction_state.status text NOT NULL
+compaction_state.last_chunk_end timestamp with time zone
+compaction_state.traces_digested bigint NOT NULL
+compaction_state.traces_excluded bigint NOT NULL
+compaction_state.operations_digested bigint NOT NULL
+compaction_state.started_at timestamp with time zone
+compaction_state.finished_at timestamp with time zone
+compaction_state.error text
+config_revision.id smallint NOT NULL
+config_revision.revision bigint NOT NULL
+config_revision.updated_at timestamp with time zone NOT NULL
+correlation_key.id uuid NOT NULL
+correlation_key.operation_definition_id uuid NOT NULL
+correlation_key.key_id integer NOT NULL
+correlation_key.role text NOT NULL
+correlation_key.step_label text
+correlation_resolver_state.id smallint NOT NULL
+correlation_resolver_state.last_processed_id bigint NOT NULL
+correlation_resolver_state.updated_at timestamp with time zone NOT NULL
+correlation_value.operation_first_seen timestamp with time zone NOT NULL
+correlation_value.updated_at timestamp with time zone NOT NULL
+correlation_value.operation_definition_id uuid NOT NULL
+correlation_value.operation_id uuid NOT NULL
+correlation_value.value text NOT NULL
+enrichment_source.id uuid NOT NULL
+enrichment_source.name text NOT NULL
+enrichment_source.connection_id uuid NOT NULL
+enrichment_source.topic text NOT NULL
+enrichment_source.status text NOT NULL
+enrichment_source.current_revision integer
+enrichment_source.created_by text NOT NULL
+enrichment_source.created_at timestamp with time zone NOT NULL
+enrichment_source.updated_at timestamp with time zone NOT NULL
+enrichment_source_revision.source_id uuid NOT NULL
+enrichment_source_revision.revision integer NOT NULL
+enrichment_source_revision.definition jsonb NOT NULL
+enrichment_source_revision.created_by text NOT NULL
+enrichment_source_revision.created_at timestamp with time zone NOT NULL
+indexed_attribute.key_id integer NOT NULL
+indexed_attribute.origin_scope text NOT NULL
+indexed_attribute.numeric boolean NOT NULL
+indexed_attribute.status text NOT NULL
+indexed_attribute.indexed_since timestamp with time zone NOT NULL
+indexed_attribute.backfill_cursor timestamp with time zone
+indexed_attribute.retained_in_digest boolean NOT NULL
+indexed_attribute.digest_transform text NOT NULL
+indexed_attribute.created_by text NOT NULL
+indexed_attribute.created_at timestamp with time zone NOT NULL
+instrumentation_scope.id bigint NOT NULL
+instrumentation_scope.name text NOT NULL
+instrumentation_scope.version text
+instrumentation_scope.schema_url text
+instrumentation_scope.attributes jsonb
+kafka_connection.id uuid NOT NULL
+kafka_connection.name text NOT NULL
+kafka_connection.bootstrap_servers text NOT NULL
+kafka_connection.security_protocol text NOT NULL
+kafka_connection.sasl_mechanism text
+kafka_connection.credentials_secret_ref text
+kafka_connection.truststore_secret_ref text
+kafka_connection.client_properties jsonb NOT NULL
+kafka_connection.created_at timestamp with time zone NOT NULL
+kafka_connection.updated_at timestamp with time zone NOT NULL
+resource.id bigint NOT NULL
+resource.service_id integer NOT NULL
+resource.schema_url text
+resource.attributes jsonb NOT NULL
+resource.first_seen timestamp with time zone NOT NULL
+resource.last_seen timestamp with time zone NOT NULL
+retention_policy.table_name text NOT NULL
+retention_policy.tier text NOT NULL
+retention_policy.retention interval NOT NULL
+retention_policy.partition_granularity text NOT NULL
+retention_policy.precreate interval NOT NULL
+service.id integer NOT NULL
+service.name text NOT NULL
+service.first_seen timestamp with time zone NOT NULL
+shedlock.name character varying(64) NOT NULL
+shedlock.lock_until timestamp without time zone NOT NULL
+shedlock.locked_at timestamp without time zone NOT NULL
+shedlock.locked_by character varying(255) NOT NULL
+span.start_time timestamp with time zone NOT NULL
+span.span_id bigint NOT NULL
+span.duration_ns bigint NOT NULL
+span.resource_id bigint NOT NULL
+span.scope_id bigint NOT NULL
+span.parent_span_id bigint
+span.trace_id uuid NOT NULL
+span.service_id integer NOT NULL
+span.name_id integer
+span.kind smallint NOT NULL
+span.status_code smallint NOT NULL
+span.trace_flags smallint NOT NULL
+span.flags smallint NOT NULL
+span.name_overflow text
+span.status_message text
+span.trace_state text
+span.dropped_counts jsonb
+span.attributes jsonb NOT NULL
+span.events jsonb
+span.links jsonb
+span_link.start_time timestamp with time zone NOT NULL
+span_link.span_id bigint NOT NULL
+span_link.linked_span_id bigint NOT NULL
+span_link.trace_id uuid NOT NULL
+span_link.linked_trace_id uuid NOT NULL
+span_link.attributes jsonb
+span_name.id integer NOT NULL
+span_name.service_id integer NOT NULL
+span_name.name text NOT NULL
+trace_attribute.ts timestamp with time zone NOT NULL
+trace_attribute.value_num double precision
+trace_attribute.trace_id uuid NOT NULL
+trace_attribute.key_id integer NOT NULL
+trace_attribute.origin smallint NOT NULL
+trace_attribute.value_str text NOT NULL
+trace_correlation.id bigint NOT NULL
+trace_correlation.observed_at timestamp with time zone NOT NULL
+trace_correlation.trace_id uuid NOT NULL
+trace_correlation.operation_definition_id uuid NOT NULL
+trace_correlation.correlation_key_id uuid NOT NULL
+trace_correlation.origin smallint NOT NULL
+trace_correlation.value text NOT NULL
+trace_digest.start_time timestamp with time zone NOT NULL
+trace_digest.duration_ns bigint NOT NULL
+trace_digest.compacted_at timestamp with time zone NOT NULL
+trace_digest.trace_id uuid NOT NULL
+trace_digest.business_operation_id uuid
+trace_digest.trace_day date NOT NULL
+trace_digest.root_service_id integer
+trace_digest.root_name_id integer
+trace_digest.span_count integer NOT NULL
+trace_digest.error_count integer NOT NULL
+trace_digest.outcome smallint NOT NULL
+trace_digest.service_ids integer[] NOT NULL
+trace_digest.attributes jsonb NOT NULL
+trace_enrichment.id bigint NOT NULL
+trace_enrichment.observed_at timestamp with time zone NOT NULL
+trace_enrichment.kafka_offset bigint NOT NULL
+trace_enrichment.span_id bigint
+trace_enrichment.source_id uuid NOT NULL
+trace_enrichment.trace_id uuid NOT NULL
+trace_enrichment.source_revision integer NOT NULL
+trace_enrichment.key_id integer NOT NULL
+trace_enrichment.kafka_partition integer NOT NULL
+trace_enrichment.value jsonb NOT NULL
+trace_summary.start_time timestamp with time zone NOT NULL
+trace_summary.end_time timestamp with time zone NOT NULL
+trace_summary.duration_ns bigint NOT NULL
+trace_summary.root_span_id bigint
+trace_summary.first_ingested_at timestamp with time zone NOT NULL
+trace_summary.last_ingested_at timestamp with time zone NOT NULL
+trace_summary.trace_id uuid NOT NULL
+trace_summary.trace_day date NOT NULL
+trace_summary.root_service_id integer
+trace_summary.root_name_id integer
+trace_summary.span_count integer NOT NULL
+trace_summary.error_count integer NOT NULL
+trace_summary.fragment_count integer NOT NULL
+trace_summary.service_ids integer[] NOT NULL

@@ -25,5 +25,12 @@
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
         </dependency>
+
+        <!-- tests: full-context integration tests only -->
+        <dependency>
+            <groupId>ru.aasmc</groupId>
+            <artifactId>tc-test-infra</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

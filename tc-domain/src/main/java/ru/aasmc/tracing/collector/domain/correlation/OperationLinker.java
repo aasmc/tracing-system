@@ -258,7 +258,7 @@ public final class OperationLinker {
     private static String primaryValueOrNull(
             CorrelationObservation observation, BusinessOperationDefinition definition) {
         boolean primary = definition.keys().stream()
-                .anyMatch(key -> key.id() == observation.correlationKeyId() && key.role() == KeyRole.PRIMARY);
+                .anyMatch(key -> key.id().equals(observation.correlationKeyId()) && key.role() == KeyRole.PRIMARY);
         return primary ? observation.value() : null;
     }
 

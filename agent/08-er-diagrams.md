@@ -39,7 +39,7 @@ erDiagram
     service |o..o{ compaction_exclusion : "service_name (by name)"
 
     kafka_connection {
-        bigint id PK "identity"
+        uuid id PK "uuidv7"
         text name UK
         text bootstrap_servers
         text security_protocol "PLAINTEXT|SSL|SASL_PLAINTEXT|SASL_SSL"
@@ -51,9 +51,9 @@ erDiagram
         timestamptz updated_at
     }
     enrichment_source {
-        bigint id PK "identity"
+        uuid id PK "uuidv7"
         text name UK "consumer group tc-enricher.name"
-        bigint connection_id FK
+        uuid connection_id FK
         text topic
         text status "DRAFT|ACTIVE|PAUSED|DELETED"
         int current_revision FK "deferrable composite FK"
@@ -62,7 +62,7 @@ erDiagram
         timestamptz updated_at
     }
     enrichment_source_revision {
-        bigint source_id PK, FK
+        uuid source_id PK, FK
         int revision PK
         jsonb definition "traceContext, scope, filter, fieldMappings"
         text created_by
@@ -81,13 +81,13 @@ erDiagram
         text status "BACKFILLING|ACTIVE|DISABLED"
         timestamptz indexed_since
         timestamptz backfill_cursor "nullable; AttributeBackfill progress"
-        boolean retain_in_digest "ADR-13; copy key into DIGEST tier"
+        boolean retained_in_digest "ADR-13; copy key into DIGEST tier"
         text digest_transform "NONE|SHA256|MASK"
         text created_by
         timestamptz created_at
     }
     business_operation_definition {
-        int id PK "identity"
+        uuid id PK "uuidv7"
         text name UK "e.g. idp.login"
         text description
         interval merge_window "default 1 day"
@@ -95,7 +95,7 @@ erDiagram
         jsonb outcome_rule "nullable; outcomeKey, successValues, failureValues, finalStepLabel"
     }
     compaction_exclusion {
-        int id PK "identity"
+        uuid id PK "uuidv7"
         text service_name "nullable; root service, NULL = any"
         text root_name_pattern "SQL LIKE on root span name"
         text description
@@ -107,8 +107,8 @@ erDiagram
         text name UK
     }
     correlation_key {
-        int id PK "identity"
-        int operation_definition_id FK
+        uuid id PK "uuidv7"
+        uuid operation_definition_id FK
         int key_id FK
         text role "PRIMARY|ALIAS"
         text step_label "nullable"
@@ -124,10 +124,10 @@ erDiagram
 - **`indexed_attribute`**: the registry of searchable keys (ADR-05).
   - A new key starts in `BACKFILLING`. `backfill_cursor` stores the last hour that AttributeBackfill processed, so a new `tc-maintenance` leader can resume. When backfill finishes, the status becomes `ACTIVE` (UC-07).
   - Built-in keys are `service.name`, `span.name` and `status`.
-  - ADR-13: `retain_in_digest` marks a key whose values are copied into `trace_digest.attributes` when the trace is compacted, after `digest_transform` (`NONE`, `SHA256` = hex SHA-256, `MASK` = first 2 characters + `***`). A retained key must be indexed. Setting the flag on a non-indexed key makes the control plane create the registry entry in `BACKFILLING`. Flagging is not retroactive for days that are already compacted.
+  - ADR-13: `retained_in_digest` marks a key whose values are copied into `trace_digest.attributes` when the trace is compacted, after `digest_transform` (`NONE`, `SHA256` = hex SHA-256, `MASK` = first 2 characters + `***`). A retained key must be indexed. Setting the flag on a non-indexed key makes the control plane create the registry entry in `BACKFILLING`. Flagging is not retroactive for days that are already compacted.
 - **`business_operation_definition` / `correlation_key`**: the definition of a business operation (UC-08). The keys of a type are its `PRIMARY` and `ALIAS` attribute keys, and `step_label` names the step in the timeline.
-  - ADR-13: `outcome_rule` (nullable jsonb) defines how the outcome of a business operation is derived at compaction: `outcomeKey` value → `successValues` / `failureValues`, otherwise any error → FAILED, otherwise `finalStepLabel` reached → SUCCESS or INCOMPLETE, otherwise SUCCESS (doc 04 §6.8). An `outcomeKey` is automatically flagged `retain_in_digest` with transform `NONE`.
-- **`compaction_exclusion`** (ADR-13): traces whose root span name matches `root_name_pattern` (SQL `LIKE`), optionally restricted to a root service, are not digested unless they belong to a business operation. It is seeded with `GET /actuator/%` and managed via `/api/v1/admin/compaction-exclusions`. The service is matched **by name**, so this is a logical relationship and no FK.
+  - ADR-13: `outcome_rule` (nullable jsonb) defines how the outcome of a business operation is derived at compaction: `outcomeKey` value → `successValues` / `failureValues`, otherwise any error → FAILED, otherwise `finalStepLabel` reached → SUCCESS or INCOMPLETE, otherwise SUCCESS (doc 04 §6.8). An `outcomeKey` is automatically flagged `retained_in_digest` with transform `NONE`.
+- **`compaction_exclusion`** (ADR-13): traces whose root span name matches `root_name_pattern` (SQL `LIKE`), optionally restricted to a root service, are not digested unless they belong to a business operation. It is seeded from `tc.compaction.initial-exclusions` (none by default) and managed via `/api/v1/admin/compaction-exclusions`. The service is matched **by name**, so this is a logical relationship and no FK.
 
 **Cardinalities (all enforced)**
 
@@ -188,7 +188,7 @@ erDiagram
         int key_id PK, FK
         text status
         timestamptz backfill_cursor
-        boolean retain_in_digest
+        boolean retained_in_digest
         text digest_transform
     }
 ```
@@ -361,26 +361,26 @@ erDiagram
     trace_enrichment ||..o{ trace_correlation : "correlation keys, origin 3"
 
     kafka_connection {
-        bigint id PK
+        uuid id PK
         text name UK
     }
     enrichment_source {
-        bigint id PK
+        uuid id PK
         text name UK
-        bigint connection_id FK
+        uuid connection_id FK
         text topic
         text status
         int current_revision FK
     }
     enrichment_source_revision {
-        bigint source_id PK, FK
+        uuid source_id PK, FK
         int revision PK
         jsonb definition
     }
     trace_enrichment {
         bigint id "identity"
         timestamptz observed_at UK "partition key DAILY; Kafka record ts"
-        bigint source_id UK "-> enrichment_source"
+        uuid source_id UK "-> enrichment_source"
         int kafka_partition UK
         bigint kafka_offset UK
         int key_id UK "-> attribute_key"
@@ -412,7 +412,7 @@ erDiagram
     trace_correlation {
         bigint id
         timestamptz observed_at
-        int operation_definition_id
+        uuid operation_definition_id
         text value
         uuid trace_id
     }
@@ -436,7 +436,7 @@ erDiagram
 | `span` 0..1 — 0..n `trace_enrichment` | logical | Only when the source scope is `SPAN` (parent span id from `traceparent`). |
 | `trace_enrichment` 1 — 0..1 `trace_attribute` / `trace_correlation` | logical | |
 
-The source and its revisions are enforced (§1). The enrichment *data* is not: `trace_enrichment` is partitioned, retained for the FULL tier's n days (ADR-13), and must survive a source being set to `DELETED`. Indexed enrichment values reach the DIGEST tier through `trace_attribute` (origin 3) when their key is `retain_in_digest`.
+The source and its revisions are enforced (§1). The enrichment *data* is not: `trace_enrichment` is partitioned, retained for the FULL tier's n days (ADR-13), and must survive a source being set to `DELETED`. Indexed enrichment values reach the DIGEST tier through `trace_attribute` (origin 3) when their key is `retained_in_digest`.
 
 ---
 
@@ -460,15 +460,15 @@ erDiagram
     business_operation_digest |o..o{ trace_digest : "operation_id = business_operation_id"
 
     business_operation_definition {
-        int id PK
+        uuid id PK
         text name UK
         interval merge_window
         text status
         jsonb outcome_rule "nullable; ADR-13"
     }
     correlation_key {
-        int id PK
-        int operation_definition_id FK
+        uuid id PK
+        uuid operation_definition_id FK
         int key_id FK
         text role "PRIMARY|ALIAS"
         text step_label
@@ -481,13 +481,13 @@ erDiagram
         bigint id "identity; resolver watermark"
         timestamptz observed_at "partition key DAILY"
         uuid trace_id "-> trace"
-        int operation_definition_id "-> business_operation_definition"
-        int correlation_key_id "-> correlation_key"
+        uuid operation_definition_id "-> business_operation_definition"
+        uuid correlation_key_id "-> correlation_key"
         smallint origin "1 SPAN 2 RESOURCE 3 ENRICHMENT"
         text value "COLLATE C, max 512 B"
     }
     correlation_value {
-        int operation_definition_id PK, FK
+        uuid operation_definition_id PK, FK
         text value PK "COLLATE C"
         uuid operation_id "-> business_operation.id"
         timestamptz operation_first_seen "-> business_operation.first_seen"
@@ -498,7 +498,7 @@ erDiagram
         timestamptz first_seen PK "partition key MONTHLY; immutable"
         timestamptz last_seen
         uuid merged_into "survivor id after merge"
-        int operation_definition_id "-> business_operation_definition"
+        uuid operation_definition_id "-> business_operation_definition"
         int trace_count
         text display_value
     }
@@ -524,7 +524,7 @@ erDiagram
     business_operation_digest {
         uuid operation_id PK "= business_operation.id"
         date op_day PK "partition key DAILY; first_seen UTC date"
-        int operation_definition_id "-> business_operation_definition"
+        uuid operation_definition_id "-> business_operation_definition"
         text display_value
         timestamptz first_seen
         timestamptz last_seen
@@ -681,8 +681,8 @@ The diagram shows six of the nine tables governed by `retention_policy`. The oth
 
 - `config_revision (1, 0)`
 - `correlation_resolver_state (1, 0)`
-- nine `retention_policy` rows: seven FULL and two DIGEST (changelog 005, §8 below)
-- one `compaction_exclusion` row: `GET /actuator/%` (changelog 005)
+- nine `retention_policy` rows: seven FULL and two DIGEST (changelog 003, §8 below)
+- one `compaction_exclusion` row per pattern of `tc.compaction.initial-exclusions`, none by default (changelog 003)
 
 ---
 

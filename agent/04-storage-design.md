@@ -88,7 +88,7 @@ PG 18 and 17 features this design relies on:
     - `DigestCompactor` in tc-maintenance builds the digest from `trace_summary`, `trace_attribute` (retained keys only) and the correlation tables, **never from `span`** (§6.8).
     - **Never drop uncompacted data:** a FULL-tier partition is dropped only after every trace day it can contribute to is compacted (drop gate, §8.7).
     - The digest is write-once, so a GIN index (`jsonb_path_ops`) on the digest `attributes` is acceptable there. Principle 6 (no GIN on live spans, ADR-05) still holds for the FULL tier.
-    - Only keys flagged `indexed_attribute.retain_in_digest` survive into the digest, optionally transformed (`digest_transform` SHA256 or MASK). Flagging a key later is not retroactive.
+    - Only keys flagged `indexed_attribute.retained_in_digest` survive into the digest, optionally transformed (`digest_transform` SHA256 or MASK). Flagging a key later is not retroactive.
 11. **Limits are configuration, not schema.** `CHECK` constraints enforce only rules that never change: non-empty values, enum values, time order, non-negative counters. Sizes, counts, lengths and time windows (name and key lengths, attribute value size, index value size, correlation value length, merge-window bounds) are configured limits enforced by the application (`IngestLimits`, `AttributeLimits`, `EnrichmentLimits`, `CorrelationLimits`), so an operator can raise them without a migration. The application validates configured limits at startup against physical ceilings, e.g. a B-tree index entry is at most about 2,700 bytes, so `maxIndexValueBytes` must stay below it.
 
 ---
@@ -124,7 +124,7 @@ Daily tables receive roughly 20 times fewer rows (`trace_summary`) or have far s
 
 ## 4. Complete DDL (Liquibase, schema `tc`)
 
-DDL is owned by `tc-schema-migrator`, which runs Liquibase 5.0.4 (the version managed by Spring Boot 4.1.3) through Spring Boot's Liquibase auto-configuration. The changelogs are **Liquibase formatted SQL**, so the DDL below is plain PostgreSQL SQL with Liquibase comment headers (§4.0).
+DDL is owned by Liquibase 5.0.4 (the version managed by Spring Boot 4.1.3). `tc-schema-migrator` runs it through Spring Boot's Liquibase auto-configuration. The changelogs are **Liquibase formatted SQL**, that is plain PostgreSQL SQL with Liquibase comment headers (§4.0). They live in the resources-only module `tc-schema-changelog` (`db/changelog/`), so that the migrator and the test infrastructure share one copy. **The changelog files are the reference for the DDL**; this section explains their layout and the design decisions behind them.
 
 **Role setup.**
 - Roles are cluster-level objects. They are created by infrastructure-as-code (§13), not by Liquibase. The same infrastructure-as-code creates the empty schema `tc` (owner `tc_owner`), because Liquibase creates its tracking tables `databasechangelog` and `databasechangeloglock` in `tc` **before** it runs the first changeset.
@@ -136,11 +136,12 @@ Master changelog `db/changelog/db.changelog-master.yaml` includes, in this order
 
 | Changelog file (`db/changelog/changes/`) | Content |
 |---|---|
-| `001-control-plane-and-dictionaries.sql` | Schema, configuration tables, dictionaries, operational tables, `correlation_value` |
-| `002-partitioned-data-tables.sql` | Partitioned parents and parent-level indexes |
-| `003-seed.sql` | Seed rows: retention defaults, singleton rows, built-in indexed attributes |
-| `004-grants.sql` | Privileges for the application roles (changeset `runOnChange:true`, so edited grants are re-applied) |
-| `005-two-tier-retention.sql` | ADR-13: new columns on `indexed_attribute`, `business_operation_definition`, `retention_policy`; the DIGEST-tier tables `trace_digest`, `business_operation_digest`; `compaction_exclusion`, `compaction_state`; retention re-seed; grants (§4.7) |
+| `001-control-plane-and-dictionaries.sql` | Configuration tables (incl. `retention_policy` with its tier, `compaction_exclusion`), dictionaries, `correlation_value`, operational tables (`correlation_resolver_state`, `shedlock`, `compaction_state`), `tc.try_float8(text)` |
+| `002-partitioned-data-tables.sql` | Partitioned parents of both tiers (FULL: `span` … `business_operation`; DIGEST: `trace_digest`, `business_operation_digest`), their parent-level indexes, `tc.operation_root(uuid)` |
+| `003-seed.sql` | Seed rows: singleton rows, retention of both tiers (from changelog parameters), built-in indexed attributes, the default compaction exclusion |
+| `004-grants.sql` | All privileges of the application roles (changeset `runOnChange:true`, so edited grants are re-applied) |
+
+> **Deviation (2026-11-22, Phase 2).** The design had a fifth changelog, `005-two-tier-retention.sql`, that altered the 001 tables, re-seeded the 003 retention rows and added its own grants. Nothing had been deployed, so its content is folded into 001–004: each table is created once with all its columns, retention is seeded once, and all grants are in one file. The boolean column is named `retained_in_digest` (a state, like the domain's `retainedInDigest`), the changelog parameter is `${fullDataDays}` (property `tc.retention.full-data-days`), and `retention_policy` checks `retention >= 2 days` and `precreate >= 1 hour` (the former upper bound of 31 days for `precreate` was a limit, not a rule). The ids of the configuration tables are UUIDv7 instead of identities (§5.1, "Surrogate ids"); data-table columns are reordered so the 16-byte ids add no padding.
 
 **Partitions are not created by Liquibase.**
 - `tc-maintenance` (PartitionManager) creates partitions on start and every 10 minutes (§8).
@@ -149,265 +150,30 @@ Master changelog `db/changelog/db.changelog-master.yaml` includes, in this order
 
 ### 4.0 Changelog conventions
 
-```yaml
-# db/changelog/db.changelog-master.yaml
-databaseChangeLog:
-  - include: { file: changes/001-control-plane-and-dictionaries.sql, relativeToChangelogFile: true }
-  - include: { file: changes/002-partitioned-data-tables.sql,       relativeToChangelogFile: true }
-  - include: { file: changes/003-seed.sql,                          relativeToChangelogFile: true }
-  - include: { file: changes/004-grants.sql,                        relativeToChangelogFile: true }
-  - include: { file: changes/005-two-tier-retention.sql,            relativeToChangelogFile: true }
-```
-
-Every file starts with `--liquibase formatted sql`. Each logical unit is one changeset with author `tc` and an id prefixed by the file number:
-
-```sql
---liquibase formatted sql
-
---changeset tc:001-01-config-tables
-SET LOCAL lock_timeout = '5s';
-CREATE TABLE tc.kafka_connection ( ... );
---rollback DROP TABLE tc.kafka_connection;
-
---changeset tc:001-20-try-float8 splitStatements:false
-CREATE FUNCTION tc.try_float8(p text) RETURNS float8 ... $$ ... $$;
-```
+Every file starts with `--liquibase formatted sql`. Each logical unit is one changeset with author `tc` and an id prefixed by the file number, e.g. `--changeset tc:001-02-attribute-keys`.
 
 Rules:
-- **Applied changesets are immutable.** Liquibase stores an MD5 checksum per changeset in `databasechangelog` and fails validation if an applied changeset changes. Fixes go into a new changeset. The only exception is `004-grants.sql`, marked `runOnChange:true`.
+- **Applied changesets are immutable.** Liquibase stores a checksum per changeset in `databasechangelog` and fails validation if an applied changeset changes. Fixes go into a new changeset. The only exception is `004-grants.sql`, marked `runOnChange:true`.
 - **Functions and `DO` blocks** (`$$ … $$` bodies with inner semicolons) use `splitStatements:false`.
 - **Non-transactional statements** (`CREATE INDEX CONCURRENTLY`, `DETACH PARTITION … CONCURRENTLY`) go into their own changeset with `runInTransaction:false` (§4.6).
-- **Changelog parameters** `${fullDataDays}` and `${digestDays}` are substituted by Liquibase from `spring.liquibase.parameters.*` (§4.7). No other `${…}` sequences may appear in the SQL.
+- **No `?` in SQL.** Liquibase sends changesets through PgJDBC, which takes `?` for a bind parameter. The jsonb operators `?`, `?|` and `?&` are therefore written differently: `j -> 'k' IS NOT NULL` for "has key `k`", and `j - ARRAY[…] = j` for "has none of these keys".
+- **Changelog parameters** `${fullDataDays}`, `${digestDays}` and `${initialCompactionExclusions}` are substituted by Liquibase from `spring.liquibase.parameters.*`. They are used only by seeds (§4.4). No other `${…}` sequences may appear in the SQL, not even in comments.
+- **Seeds that use parameters accept any checksum** (`--validCheckSum: ANY`). Liquibase computes the checksum *after* substituting parameters, so a value changed after installation (e.g. `tc.retention.full-data-days`) would otherwise fail validation of every later migration. Such seeds describe the first installation only; later changes go through the control plane.
 - **Rollback** comments are written for DDL changesets of configuration tables. Data tables are expand-only and are never rolled back by Liquibase.
-- **Schema version check.** Each release declares the id of its last required changeset (for example `005-40-grants-digest`). The services' `SchemaVersionGuard` checks that this id is present in `tc.databasechangelog` (03 §7.2). No database tags are needed.
+- **No size limits in CHECK constraints.** Lengths, counts and windows are configuration (enforced by the services), so a CHECK states only rules that never change: not empty, enumerations, syntax (e.g. Kafka's topic-name rule), ordering, and correctness floors.
+- **Schema version check.** Each release declares the id of its last required changeset (for example `003-04-initial-compaction-exclusions`). The services' `SchemaVersionGuard` checks that this id is present in `tc.databasechangelog` (03 §7.2). No database tags are needed.
 
 ### 4.1 001 — configuration, dictionaries, operational tables
 
-```sql
---liquibase formatted sql
--- 001-control-plane-and-dictionaries.sql (changeset headers omitted below for readability; see §4.0)
-CREATE SCHEMA IF NOT EXISTS tc AUTHORIZATION tc_owner;
-
-------------------------------------------------------------------------
--- Configuration (control plane). Small, unpartitioned, FKs ENFORCED.
-------------------------------------------------------------------------
-CREATE TABLE tc.kafka_connection (
-    id                     bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name                   text        NOT NULL,
-    bootstrap_servers      text        NOT NULL,
-    security_protocol      text        NOT NULL DEFAULT 'SASL_SSL',
-    sasl_mechanism         text        NULL,
-    credentials_secret_ref text        NULL,    -- Vault / k8s secret reference, never the secret
-    truststore_secret_ref  text        NULL,
-    client_properties      jsonb       NOT NULL DEFAULT '{}'::jsonb,
-    created_at             timestamptz NOT NULL DEFAULT now(),
-    updated_at             timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT kafka_connection_name_uk     UNIQUE (name),
-    CONSTRAINT kafka_connection_protocol_ck CHECK (security_protocol IN
-        ('PLAINTEXT','SSL','SASL_PLAINTEXT','SASL_SSL')),
-    CONSTRAINT kafka_connection_sasl_ck     CHECK (
-        (security_protocol LIKE 'SASL%') = (sasl_mechanism IS NOT NULL)),
-    CONSTRAINT kafka_connection_mech_ck     CHECK (sasl_mechanism IN
-        ('PLAIN','SCRAM-SHA-256','SCRAM-SHA-512','OAUTHBEARER','GSSAPI')),
-    CONSTRAINT kafka_connection_props_ck    CHECK (jsonb_typeof(client_properties) = 'object'),
-    -- defence in depth: secrets must not be smuggled in via client properties
-    CONSTRAINT kafka_connection_nosecret_ck CHECK (NOT (client_properties ?| ARRAY[
-        'sasl.jaas.config','ssl.keystore.password','ssl.key.password',
-        'ssl.truststore.password','ssl.keystore.key','ssl.keystore.certificate.chain']))
-);
-
-CREATE TABLE tc.enrichment_source (
-    id               bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name             text        NOT NULL,
-    connection_id    bigint      NOT NULL REFERENCES tc.kafka_connection (id),
-    topic            text        NOT NULL,
-    status           text        NOT NULL DEFAULT 'DRAFT',
-    current_revision int         NULL,
-    created_by       text        NOT NULL,
-    created_at       timestamptz NOT NULL DEFAULT now(),
-    updated_at       timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT enrichment_source_name_uk   UNIQUE (name),
-    -- name becomes part of the consumer group id "tc-enricher.<sourceName>"
-    CONSTRAINT enrichment_source_name_ck   CHECK (name ~ '^[a-z0-9][a-z0-9._-]{2,}$'),  -- max length: configured (EnrichmentLimits)
-    CONSTRAINT enrichment_source_topic_ck  CHECK (topic ~ '^[A-Za-z0-9._-]{1,249}$'),
-    CONSTRAINT enrichment_source_status_ck CHECK (status IN ('DRAFT','ACTIVE','PAUSED','DELETED')),
-    CONSTRAINT enrichment_source_rev_ck    CHECK (status IN ('DRAFT','DELETED')
-                                                  OR current_revision IS NOT NULL)
-);
-CREATE INDEX enrichment_source_connection_idx ON tc.enrichment_source (connection_id);
-
-CREATE TABLE tc.enrichment_source_revision (
-    source_id  bigint      NOT NULL REFERENCES tc.enrichment_source (id),
-    revision   int         NOT NULL,
-    definition jsonb       NOT NULL,
-    created_by text        NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT enrichment_source_revision_pk PRIMARY KEY (source_id, revision),
-    CONSTRAINT enrichment_source_revision_ck CHECK (revision > 0),
-    CONSTRAINT enrichment_source_definition_ck CHECK (
-        jsonb_typeof(definition) = 'object'
-        AND definition ? 'traceContext'
-        AND jsonb_typeof(definition -> 'fieldMappings') = 'array')
-);
--- current_revision must point at an existing revision of the same source.
--- DEFERRABLE so that "insert revision N + bump current_revision" works in any order in one tx.
-ALTER TABLE tc.enrichment_source
-    ADD CONSTRAINT enrichment_source_current_rev_fk
-    FOREIGN KEY (id, current_revision)
-    REFERENCES tc.enrichment_source_revision (source_id, revision)
-    DEFERRABLE INITIALLY DEFERRED;
-
-------------------------------------------------------------------------
--- Dictionaries
-------------------------------------------------------------------------
-CREATE TABLE tc.attribute_key (
-    id         int         GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    key        text        COLLATE "C" NOT NULL,
-    value_type text        NOT NULL,
-    first_seen timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT attribute_key_key_uk  UNIQUE (key),
-    CONSTRAINT attribute_key_len_ck  CHECK (octet_length(key) >= 1),  -- max length: configured (AttributeLimits)
-    CONSTRAINT attribute_key_type_ck CHECK (value_type IN
-        ('STRING','BOOLEAN','LONG','DOUBLE',
-         'STRING_ARRAY','BOOLEAN_ARRAY','LONG_ARRAY','DOUBLE_ARRAY','MIXED'))
-);
-
-CREATE TABLE tc.indexed_attribute (
-    key_id        int         PRIMARY KEY REFERENCES tc.attribute_key (id),
-    origin_scope  text        NOT NULL DEFAULT 'ANY',
-    numeric       boolean     NOT NULL DEFAULT false,
-    status        text        NOT NULL DEFAULT 'BACKFILLING',
-    indexed_since timestamptz NOT NULL DEFAULT now(),
-    backfill_cursor timestamptz NULL,      -- AttributeBackfill progress (hour already processed); resume after leader change
-    created_by    text        NOT NULL,
-    created_at    timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT indexed_attribute_scope_ck  CHECK (origin_scope IN ('ANY','SPAN','RESOURCE','ENRICHMENT')),
-    CONSTRAINT indexed_attribute_status_ck CHECK (status IN ('BACKFILLING','ACTIVE','DISABLED'))
-);
-
-CREATE TABLE tc.business_operation_definition (
-    id           int      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name         text     NOT NULL,
-    description  text     NULL,
-    merge_window interval NOT NULL DEFAULT '1 day',
-    status       text     NOT NULL DEFAULT 'ACTIVE',
-    CONSTRAINT business_operation_definition_name_uk   UNIQUE (name),
-    CONSTRAINT business_operation_definition_window_ck CHECK (merge_window > interval '0'),  -- bounds: configured (CorrelationLimits)
-    CONSTRAINT business_operation_definition_status_ck CHECK (status IN ('ACTIVE','DISABLED'))
-);
-
-CREATE TABLE tc.correlation_key (
-    id                  int  GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    operation_definition_id int  NOT NULL REFERENCES tc.business_operation_definition (id),
-    key_id              int  NOT NULL REFERENCES tc.attribute_key (id),
-    role                text NOT NULL,
-    step_label          text NULL,
-    CONSTRAINT correlation_key_role_ck    CHECK (role IN ('PRIMARY','ALIAS')),
-    CONSTRAINT correlation_key_type_key_uk UNIQUE (operation_definition_id, key_id)
-);
-CREATE INDEX correlation_key_key_idx ON tc.correlation_key (key_id);
-
-CREATE TABLE tc.retention_policy (
-    table_name            text     PRIMARY KEY,
-    retention             interval NOT NULL,
-    partition_granularity text     NOT NULL,
-    precreate             interval NOT NULL DEFAULT '3 days',
-    CONSTRAINT retention_policy_table_ck CHECK (table_name IN
-        ('span','trace_attribute','span_link','trace_summary',
-         'trace_enrichment','trace_correlation','business_operation')),
-    CONSTRAINT retention_policy_gran_ck  CHECK (partition_granularity IN ('HOUR','DAY','MONTH')),
-    CONSTRAINT retention_policy_ret_ck   CHECK (retention >= interval '1 day'),
-    CONSTRAINT retention_policy_pre_ck   CHECK (precreate BETWEEN interval '1 hour' AND interval '31 days')
-);
-
-CREATE TABLE tc.config_revision (
-    id         smallint    PRIMARY KEY,
-    revision   bigint      NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT config_revision_singleton_ck CHECK (id = 1)
-);
-
-CREATE TABLE tc.service (
-    id         int         GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name       text        COLLATE "C" NOT NULL,
-    first_seen timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT service_name_uk UNIQUE (name),
-    CONSTRAINT service_name_ck CHECK (octet_length(name) >= 1)  -- max length: configured attribute value size
-);
-
-CREATE TABLE tc.span_name (
-    id         int  GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    service_id int  NOT NULL REFERENCES tc.service (id),
-    name       text COLLATE "C" NOT NULL,
-    CONSTRAINT span_name_service_name_uk UNIQUE (service_id, name),
-    CONSTRAINT span_name_len_ck CHECK (octet_length(name) >= 1)  -- dictionary threshold: configured
-);
-
--- id = xxHash64 (seed 0) of canonical resource: schemaUrl + sorted (key,type,value) triples,
--- reinterpreted as signed 64-bit (Java long).
-CREATE TABLE tc.resource (
-    id         bigint      PRIMARY KEY,
-    service_id int         NOT NULL REFERENCES tc.service (id),
-    schema_url text        NULL,
-    attributes jsonb       NOT NULL,
-    first_seen timestamptz NOT NULL DEFAULT now(),
-    last_seen  timestamptz NOT NULL DEFAULT now()
-) WITH (fillfactor = 90);              -- room for HOT updates of last_seen
-CREATE INDEX resource_service_idx ON tc.resource (service_id);
-
-CREATE TABLE tc.instrumentation_scope (
-    id         bigint PRIMARY KEY,     -- xxHash64 of name|version|schemaUrl|sorted attributes
-    name       text   NOT NULL,
-    version    text   NULL,
-    schema_url text   NULL,
-    attributes jsonb  NULL
-);
-
-------------------------------------------------------------------------
--- Correlation map (unpartitioned; maintained by the resolver only)
-------------------------------------------------------------------------
-CREATE TABLE tc.correlation_value (
-    operation_definition_id  int         NOT NULL REFERENCES tc.business_operation_definition (id),
-    value                text        COLLATE "C" NOT NULL,
-    operation_id         uuid        NOT NULL,          -- logical ref -> business_operation(id, first_seen)
-    operation_first_seen timestamptz NOT NULL,          -- partition key of the referenced op (pruning)
-    updated_at           timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT correlation_value_pk PRIMARY KEY (operation_definition_id, value)
-) WITH (fillfactor = 85);
-CREATE INDEX correlation_value_operation_idx ON tc.correlation_value (operation_id);
-
-------------------------------------------------------------------------
--- Operational
-------------------------------------------------------------------------
-CREATE TABLE tc.correlation_resolver_state (
-    id                smallint    PRIMARY KEY,
-    last_processed_id bigint      NOT NULL DEFAULT 0,
-    updated_at        timestamptz NOT NULL DEFAULT now()
-);
-
--- Standard ShedLock DDL (JdbcTemplateLockProvider). Use .usingDbTime() so that
--- lock_until/locked_at are computed by the DB clock, not by pod clocks.
-CREATE TABLE tc.shedlock (
-    name       varchar(64)  NOT NULL,
-    lock_until timestamp    NOT NULL,
-    locked_at  timestamp    NOT NULL,
-    locked_by  varchar(255) NOT NULL,
-    PRIMARY KEY (name)
-);
-
-------------------------------------------------------------------------
--- Helper functions
-------------------------------------------------------------------------
--- Used by AttributeBackfill (03 §6) to fill trace_attribute.value_num for numeric keys:
--- returns NULL instead of raising when the text is not a valid float8.
-CREATE FUNCTION tc.try_float8(p text) RETURNS float8
-    LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
-BEGIN
-    RETURN p::float8;
-EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
-    RETURN NULL;
-END $$;
-```
+Small, unpartitioned tables with enforced foreign keys:
+- **Kafka connections and enrichment sources** (`kafka_connection`, `enrichment_source`, `enrichment_source_revision`). Secrets are only *referenced* (`credentials_secret_ref`, `truststore_secret_ref`); a CHECK rejects the known secret properties in `client_properties` as defence in depth. `enrichment_source.current_revision` references a revision of the same source through a `DEFERRABLE INITIALLY DEFERRED` FK, so that "insert revision N and switch to it" works in either order in one transaction.
+- **Attribute keys** (`attribute_key`, `indexed_attribute` with `retained_in_digest` and `digest_transform`).
+- **Business operation definitions** (`business_operation_definition` with the optional `outcome_rule` jsonb, `correlation_key`). The outcome-rule CHECK relies on NULL semantics: a missing rule or field makes its comparison NULL, which a CHECK accepts, while a field of the wrong type fails it.
+- **Retention and compaction configuration** (`retention_policy` with `tier` FULL/DIGEST, `compaction_exclusion`), and the singleton `config_revision`.
+- **Dictionaries** (`service`, `span_name`, `resource`, `instrumentation_scope`). `resource.id` and `instrumentation_scope.id` are xxHash64 ids computed by the ingester; `resource` has `fillfactor = 90` so `last_seen` updates stay HOT.
+- **`correlation_value`**, the current business operation of each correlation value, maintained by the resolver only (`fillfactor = 85`).
+- **Operational tables**: `correlation_resolver_state`, ShedLock's standard `shedlock` table (the lock provider uses the database clock, `.usingDbTime()`), and `compaction_state` (one row per trace day).
+- **`tc.try_float8(text)`** returns NULL instead of raising for a text that is not a float8; AttributeBackfill uses it to fill `trace_attribute.value_num`.
 
 ### 4.2 002 — partitioned data tables
 
@@ -423,157 +189,19 @@ Indexes are declared on the **partitioned parent**. PostgreSQL creates or attach
 
 Storage parameters such as `fillfactor`, autovacuum settings and `toast_tuple_target` **cannot be set on a partitioned parent**, which has no storage. `UNLOGGED` is not supported for partitioned tables either. PartitionManager therefore sets these parameters on every partition when it creates it (§8.2).
 
-```sql
---liquibase formatted sql
--- 002-partitioned-data-tables.sql (changeset headers omitted below for readability; see §4.0)
+| Table | Partition key, granularity | Indexes besides the PK |
+|---|---|---|
+| `span` | `start_time`, hour | none |
+| `trace_summary` | `trace_day`, day | `(start_time DESC)`, `(root_service_id, start_time DESC)`, `(root_service_id, duration_ns)` |
+| `trace_attribute` | `ts`, hour | `(key_id, value_str, ts DESC) INCLUDE (trace_id)`; `(key_id, value_num, ts DESC) INCLUDE (trace_id) WHERE value_num IS NOT NULL` |
+| `span_link` | `start_time`, day | `(linked_trace_id)`, `(trace_id)` |
+| `trace_enrichment` | `observed_at`, day | `(trace_id)`; idempotency key `UNIQUE (source_id, kafka_partition, kafka_offset, key_id, observed_at)` |
+| `trace_correlation` | `observed_at`, day | `(operation_definition_id, value) INCLUDE (trace_id)`, `(trace_id)`, `(id)` |
+| `business_operation` | `first_seen`, month | `(operation_definition_id, first_seen DESC)` |
+| `trace_digest` | `trace_day`, day | `(start_time DESC)`, `(root_service_id, start_time DESC)`, `(business_operation_id) WHERE NOT NULL`, GIN `(attributes jsonb_path_ops)` |
+| `business_operation_digest` | `op_day`, day | `(operation_definition_id, first_seen DESC)`, `(operation_definition_id, display_value)`, `(operation_definition_id, outcome, first_seen DESC)`, GIN `(attributes jsonb_path_ops)` |
 
-------------------------------------------------------------------------
--- span: RANGE(start_time), HOURLY. Only index = PK.
-------------------------------------------------------------------------
-CREATE TABLE tc.span (
-    start_time     timestamptz NOT NULL,   -- span start, µs (nanos truncated)
-    span_id        bigint      NOT NULL,
-    duration_ns    bigint      NOT NULL,   -- exact: endEpochNanos - startEpochNanos
-    resource_id    bigint      NOT NULL,   -- logical -> resource.id
-    scope_id       bigint      NOT NULL,   -- logical -> instrumentation_scope.id
-    parent_span_id bigint      NULL,       -- NULL for root ("0000000000000000" on the wire)
-    trace_id       uuid        NOT NULL,
-    service_id     int         NOT NULL,   -- logical -> service.id
-    name_id        int         NULL,       -- logical -> span_name.id; NULL on overflow
-    kind           smallint    NOT NULL,   -- 0 UNSPECIFIED,1 INTERNAL,2 SERVER,3 CLIENT,4 PRODUCER,5 CONSUMER
-    status_code    smallint    NOT NULL,   -- 0 UNSET, 1 OK, 2 ERROR
-    trace_flags    smallint    NOT NULL,   -- W3C flags as unsigned byte
-    flags          smallint    NOT NULL DEFAULT 0,  -- TCS bit flags, see §5.5
-    name_overflow  text        STORAGE MAIN COMPRESSION lz4 NULL,
-    status_message text        STORAGE MAIN COMPRESSION lz4 NULL,
-    trace_state    text        STORAGE MAIN COMPRESSION lz4 NULL,
-    dropped_counts jsonb       STORAGE MAIN COMPRESSION lz4 NULL,  -- only if any count > 0
-    attributes     jsonb       STORAGE MAIN COMPRESSION lz4 NOT NULL DEFAULT '{}'::jsonb,
-    events         jsonb       STORAGE MAIN COMPRESSION lz4 NULL,
-    links          jsonb       STORAGE MAIN COMPRESSION lz4 NULL,
-    CONSTRAINT span_pk            PRIMARY KEY (trace_id, span_id, start_time),
-    CONSTRAINT span_span_id_ck    CHECK (span_id <> 0),
-    CONSTRAINT span_duration_ck   CHECK (duration_ns >= 0),
-    CONSTRAINT span_kind_ck       CHECK (kind BETWEEN 0 AND 5),
-    CONSTRAINT span_status_ck     CHECK (status_code BETWEEN 0 AND 2),
-    CONSTRAINT span_trace_flags_ck CHECK (trace_flags BETWEEN 0 AND 255),
-    CONSTRAINT span_name_ck       CHECK ((name_id IS NULL) <> (name_overflow IS NULL))
-) PARTITION BY RANGE (start_time);
-
-------------------------------------------------------------------------
--- trace_summary: RANGE(trace_day), DAILY. One row per trace per trace_day.
-------------------------------------------------------------------------
-CREATE TABLE tc.trace_summary (
-    start_time        timestamptz NOT NULL,   -- min(span.start_time)
-    end_time          timestamptz NOT NULL,   -- max(span.start_time + duration)
-    duration_ns       bigint      NOT NULL,   -- (end_time - start_time), µs resolution
-    root_span_id      bigint      NULL,
-    first_ingested_at timestamptz NOT NULL,
-    last_ingested_at  timestamptz NOT NULL,
-    trace_id          uuid        NOT NULL,
-    trace_day         date        NOT NULL,   -- UTC day chosen by TraceDayResolver
-    root_service_id   int         NULL,
-    root_name_id      int         NULL,
-    span_count        int         NOT NULL,
-    error_count       int         NOT NULL DEFAULT 0,
-    fragment_count    int         NOT NULL DEFAULT 1,
-    service_ids       int[]       NOT NULL,   -- sorted, distinct
-    CONSTRAINT trace_summary_pk        PRIMARY KEY (trace_id, trace_day),
-    CONSTRAINT trace_summary_time_ck   CHECK (end_time >= start_time),
-    CONSTRAINT trace_summary_counts_ck CHECK (span_count > 0 AND error_count BETWEEN 0 AND span_count)
-) PARTITION BY RANGE (trace_day);
-CREATE INDEX trace_summary_start_idx            ON tc.trace_summary (start_time DESC);
-CREATE INDEX trace_summary_root_svc_start_idx   ON tc.trace_summary (root_service_id, start_time DESC);
-CREATE INDEX trace_summary_root_svc_dur_idx     ON tc.trace_summary (root_service_id, duration_ns);
-
-------------------------------------------------------------------------
--- trace_attribute: RANGE(ts), HOURLY. Inverted index of REGISTERED keys only.
-------------------------------------------------------------------------
-CREATE TABLE tc.trace_attribute (
-    ts        timestamptz      NOT NULL,     -- span start (SPAN/RESOURCE/DERIVED) or observed_at (ENRICHMENT)
-    value_num double precision NULL,         -- set when indexed_attribute.numeric and value is numeric
-    trace_id  uuid             NOT NULL,
-    key_id    int              NOT NULL,     -- logical -> attribute_key.id
-    origin    smallint         NOT NULL,     -- 1 SPAN, 2 RESOURCE, 3 ENRICHMENT, 4 DERIVED
-    value_str text             COLLATE "C" NOT NULL,   -- canonical text, cut to IngestLimits.maxIndexValueBytes
-    CONSTRAINT trace_attribute_origin_ck CHECK (origin BETWEEN 1 AND 4)
-) PARTITION BY RANGE (ts);
-CREATE INDEX trace_attribute_kv_ts_idx
-    ON tc.trace_attribute (key_id, value_str, ts DESC) INCLUDE (trace_id);
-CREATE INDEX trace_attribute_num_ts_idx
-    ON tc.trace_attribute (key_id, value_num, ts DESC) INCLUDE (trace_id)
-    WHERE value_num IS NOT NULL;
-
-------------------------------------------------------------------------
--- span_link: RANGE(start_time), DAILY. Native OTel links, trace-to-trace graph.
-------------------------------------------------------------------------
-CREATE TABLE tc.span_link (
-    start_time      timestamptz NOT NULL,     -- start of the LINKING span
-    span_id         bigint      NOT NULL,
-    linked_span_id  bigint      NOT NULL,
-    trace_id        uuid        NOT NULL,
-    linked_trace_id uuid        NOT NULL,
-    attributes      jsonb       NULL
-) PARTITION BY RANGE (start_time);
-CREATE INDEX span_link_linked_trace_idx ON tc.span_link (linked_trace_id);
-CREATE INDEX span_link_trace_idx        ON tc.span_link (trace_id);
-
-------------------------------------------------------------------------
--- trace_enrichment: RANGE(observed_at), DAILY. Append-only additions (ADR-07).
-------------------------------------------------------------------------
-CREATE TABLE tc.trace_enrichment (
-    id              bigint      GENERATED ALWAYS AS IDENTITY,
-    observed_at     timestamptz NOT NULL,   -- Kafka record timestamp (deterministic on replay)
-    source_id       bigint      NOT NULL,   -- logical -> enrichment_source.id
-    kafka_offset    bigint      NOT NULL,
-    span_id         bigint      NULL,       -- set when source scope = SPAN
-    trace_id        uuid        NOT NULL,
-    source_revision int         NOT NULL,
-    key_id          int         NOT NULL,   -- logical -> attribute_key.id
-    kafka_partition int         NOT NULL,
-    value           jsonb       NOT NULL,   -- same typed encoding as span attributes (§5)
-    CONSTRAINT trace_enrichment_record_uk
-        UNIQUE (source_id, kafka_partition, kafka_offset, key_id, observed_at)
-) PARTITION BY RANGE (observed_at);
-CREATE INDEX trace_enrichment_trace_idx ON tc.trace_enrichment (trace_id);
-
-------------------------------------------------------------------------
--- trace_correlation: RANGE(observed_at), DAILY. Input of the resolver.
-------------------------------------------------------------------------
-CREATE TABLE tc.trace_correlation (
-    id                  bigint      GENERATED ALWAYS AS IDENTITY,
-    observed_at         timestamptz NOT NULL,  -- span start (origin 1/2) or Kafka ts (origin 3)
-    trace_id            uuid        NOT NULL,
-    operation_definition_id int         NOT NULL,  -- logical -> business_operation_definition.id
-    correlation_key_id  int         NOT NULL,  -- logical -> correlation_key.id
-    origin              smallint    NOT NULL,
-    value               text        COLLATE "C" NOT NULL,
-    CONSTRAINT trace_correlation_origin_ck CHECK (origin BETWEEN 1 AND 4)  -- value length: configured (CorrelationLimits)
-) PARTITION BY RANGE (observed_at);
-CREATE INDEX trace_correlation_definition_value_idx
-    ON tc.trace_correlation (operation_definition_id, value) INCLUDE (trace_id);
-CREATE INDEX trace_correlation_trace_idx ON tc.trace_correlation (trace_id);
-CREATE INDEX trace_correlation_id_idx    ON tc.trace_correlation (id);
-
-------------------------------------------------------------------------
--- business_operation: RANGE(first_seen), MONTHLY.
-------------------------------------------------------------------------
-CREATE TABLE tc.business_operation (
-    id                  uuid        NOT NULL DEFAULT uuidv7(),
-    first_seen          timestamptz NOT NULL,   -- immutable (partition key)
-    last_seen           timestamptz NOT NULL,
-    merged_into         uuid        NULL,       -- survivor id after a merge (UC-10)
-    operation_definition_id int         NOT NULL,   -- logical -> business_operation_definition.id
-    trace_count         int         NOT NULL DEFAULT 0,
-    display_value       text        NOT NULL,
-    CONSTRAINT business_operation_pk       PRIMARY KEY (id, first_seen),
-    CONSTRAINT business_operation_time_ck  CHECK (last_seen >= first_seen),
-    CONSTRAINT business_operation_merge_ck CHECK (merged_into IS DISTINCT FROM id),
-    CONSTRAINT business_operation_count_ck CHECK (trace_count >= 0)
-) PARTITION BY RANGE (first_seen);
-CREATE INDEX business_operation_type_first_seen_idx
-    ON tc.business_operation (operation_definition_id, first_seen DESC);
-```
+`tc.operation_root(uuid)` follows `business_operation.merged_into` to the operation that was not merged (path compression in §6.7 keeps chains at one step; a depth limit of 8 only stops a corrupt cycle). It probes the PK of each retained monthly partition, because `first_seen` is unknown.
 
 Notes on the DDL:
 
@@ -581,6 +209,7 @@ Notes on the DDL:
   - As a consequence, two copies of a span with the same id but *different* start times are not detected as duplicates.
   - Starter replays always carry identical timestamps, so this is acceptable.
 - **`trace_enrichment` and `trace_correlation` have no primary key.** Their `id` exists for ordering and watermarks. A PK on `(id, observed_at)` would only add another index.
+- **No DEFAULT partitions.** A row for which no partition exists is rejected (SQLSTATE 23514) instead of silently landing in a catch-all partition that would later block `ATTACH`.
 - **`COLLATE "C"`** is used on `trace_attribute.value_str`, `trace_correlation.value`, `correlation_value.value` and the dictionary names. It has three effects:
   - B-tree comparisons become byte-wise, which is faster than ICU or libc collation;
   - `LIKE 'abc%'` and range predicates can use the plain B-tree, which autocomplete (UC-15) and the `PREFIX` operator need;
@@ -590,8 +219,7 @@ Notes on the DDL:
   - Rows between 2 KB and about 8 KB are compressed *inline* rather than moved out of line. That avoids a TOAST index lookup per span on trace reads.
   - The setting also enables the optional inline-compression mode of §4.3.
 - The B-tree tuple size limit is roughly one third of a page, about 2.7 KB. Index keys must therefore be bounded:
-  - `value_str` and correlation `value` are capped at 512 bytes;
-  - longer values are truncated by the ingester on a UTF-8 boundary;
+  - `value_str` and correlation `value` are cut to the configured index length (default 512 bytes) by the ingester, on a UTF-8 boundary;
   - the matching rule is described in §7.2.
 
 ### 4.3 Note: the brief's `toast_tuple_target = 128` must be combined with `STORAGE MAIN`
@@ -614,37 +242,15 @@ When creating partitions with `CREATE TABLE … (LIKE tc.span …)`, use `INCLUD
 
 ### 4.4 003 — seed data
 
-```sql
---liquibase formatted sql
--- 003-seed.sql (changeset headers omitted below for readability; see §4.0)
-INSERT INTO tc.config_revision (id, revision) VALUES (1, 0);
-INSERT INTO tc.correlation_resolver_state (id, last_processed_id) VALUES (1, 0);
-
-INSERT INTO tc.retention_policy (table_name, retention, partition_granularity, precreate) VALUES
-    ('span',               interval '14 days', 'HOUR',  interval '3 days'),
-    ('trace_attribute',    interval '14 days', 'HOUR',  interval '3 days'),
-    ('span_link',          interval '14 days', 'DAY',   interval '3 days'),
-    ('trace_summary',      interval '30 days', 'DAY',   interval '3 days'),
-    ('trace_enrichment',   interval '30 days', 'DAY',   interval '3 days'),
-    ('trace_correlation',  interval '90 days', 'DAY',   interval '3 days'),
-    ('business_operation', interval '90 days', 'MONTH', interval '3 days');
-
--- Built-in indexed keys (ADR-05). They are written with origin 2 (service.name, from the
--- resource) or 4 (DERIVED: root span name, trace error status).
-INSERT INTO tc.attribute_key (key, value_type) VALUES
-    ('service.name', 'STRING'), ('span.name', 'STRING'), ('status', 'STRING');
-INSERT INTO tc.indexed_attribute (key_id, origin_scope, numeric, status, created_by)
-SELECT id, CASE key WHEN 'service.name' THEN 'RESOURCE' ELSE 'SPAN' END, false, 'ACTIVE', 'system'
-FROM tc.attribute_key WHERE key IN ('service.name', 'span.name', 'status');
-```
-
-For `business_operation`, the MONTH granularity combined with a 90-day retention means a monthly partition is dropped when its *upper* bound is older than 90 days. Operations therefore actually live 90 to about 121 days. `correlation_value` rows are deleted by maintenance once their `operation_first_seen` is older than the `business_operation` retention (§8.4).
-
-> **Superseded by changelog 005 (ADR-13).** Changelog 005 (§4.7) re-seeds every row above to the FULL tier with `retention = 7 days` and adds the two DIGEST-tier rows (97 days). A `business_operation` month partition is then dropped once the whole month is older than n days **and** every operation in it is compacted, so operations stay in the FULL tier for at most about 38–40 days. `correlation_value` rows are deleted once their operation is compacted (§8.4).
+- `config_revision` (revision 0) and `correlation_resolver_state` (`last_processed_id` 0) get their single row.
+- `retention_policy` gets one row per data table: the seven FULL tables keep `${fullDataDays}` days, the two DIGEST tables `${fullDataDays} + ${digestDays}` days (a DIGEST row stores the total age). `tc-schema-migrator` fills the parameters from `tc.retention.full-data-days` (default 7) and `tc.retention.digest-days` (default 90). They seed the first installation only; afterwards the rows are owned by the control plane (`PUT /api/v1/admin/retention-policies/tiers`). Every row pre-creates partitions 3 days ahead.
+- The built-in indexed keys `service.name` (origin RESOURCE), `span.name` and `status` (derived by the ingester) are `ACTIVE`, created by `system`.
+- `compaction_exclusion` gets one row (any service) per pattern of the changelog parameter `${initialCompactionExclusions}`, filled from `tc.compaction.initial-exclusions` (comma-separated SQL LIKE patterns on the root span name, default empty). Nothing is assumed about probes: span names depend on the client's instrumentation (e.g. Micrometer names server spans `http get /actuator/health`) and on its actuator base path. Exclusions are changed at runtime through the control plane.
+- The seeds that use changelog parameters (`003-02`, `003-04`) carry `validCheckSum: ANY` (§4.0).
 
 ### 4.5 004 — grants
 
-Changelog 004 holds the per-database privileges shown in §13.2. Role creation itself (cluster level) lives in infrastructure-as-code.
+Changelog 004 holds every per-database privilege of the application roles, shown in §13.2. Role creation and database-level privileges (cluster level) live in infrastructure-as-code.
 
 ### 4.6 Adding indexes later (non-transactional migrations)
 
@@ -660,190 +266,17 @@ ALTER INDEX tc.trace_summary_new_idx ATTACH PARTITION tc.trace_summary_p20261121
 
 Partitions created after the parent index exists receive the index automatically.
 
-### 4.7 005 — two-tier retention (ADR-13)
+### 4.7 Two-tier retention in the schema (ADR-13)
 
-Changelog 005 consists of regular transactional changesets. Every `ALTER TABLE … ADD COLUMN` below has a constant default, so it is a catalogue-only change, and the altered tables are tiny configuration tables. The new partitioned parents are empty, so their parent-level indexes are created directly (no §4.6 procedure is needed).
+The two tiers need no changelog of their own (see the deviation note in §4):
+- `indexed_attribute.retained_in_digest` / `digest_transform` (NONE, SHA256, MASK) choose which attribute values survive into `trace_digest.attributes` and how they are transformed;
+- `business_operation_definition.outcome_rule` (optional jsonb `{outcomeKey, successValues, failureValues, finalStepLabel}`) decides the outcome of a compacted operation;
+- `retention_policy.tier` marks the FULL and the DIGEST rows; `compaction_exclusion` lists traces that are never digested unless they belong to a business operation; `compaction_state` records the progress of each trace day (§6.8);
+- `trace_digest`, `business_operation_digest` and `tc.operation_root(uuid)` are created in 002;
+- the grants (`compaction_exclusion` read by the ingester and the enricher and edited by `tc_admin`, `compaction_state` read by `tc_admin`, `tc.operation_root` executed by `tc_query`) are in 004.
 
-`${fullDataDays}` and `${digestDays}` are Liquibase changelog parameters (`spring.liquibase.parameters.fullDataDays` / `digestDays`). tc-schema-migrator fills them from `tc.retention.full-days` (default 7) and `tc.retention.digest-days` (default 90). They are used **only by this seed**. Afterwards the values are owned by `retention_policy` and changed through `PUT /api/v1/admin/retention-policies/tiers`.
 
-```sql
---liquibase formatted sql
--- 005-two-tier-retention.sql (changeset headers omitted below for readability; see §4.0)
-
-------------------------------------------------------------------------
--- New configuration columns
-------------------------------------------------------------------------
-ALTER TABLE tc.indexed_attribute
-    ADD COLUMN retain_in_digest boolean NOT NULL DEFAULT false,   -- copy this key into the DIGEST tier
-    ADD COLUMN digest_transform text    NOT NULL DEFAULT 'NONE',  -- applied when the value is digested
-    ADD CONSTRAINT indexed_attribute_transform_ck CHECK (digest_transform IN ('NONE','SHA256','MASK'));
-
-ALTER TABLE tc.business_operation_definition
-    ADD COLUMN outcome_rule jsonb NULL,
-    -- {"outcomeKey":"business.outcome","successValues":["SUCCESS"],
-    --  "failureValues":["FAILED","DENIED"],"finalStepLabel":"token-exchange"}   (all fields optional)
-    ADD CONSTRAINT business_operation_definition_outcome_rule_ck CHECK (
-        outcome_rule IS NULL OR (
-            jsonb_typeof(outcome_rule) = 'object'
-            AND (NOT outcome_rule ? 'outcomeKey'     OR jsonb_typeof(outcome_rule -> 'outcomeKey')     = 'string')
-            AND (NOT outcome_rule ? 'successValues'  OR jsonb_typeof(outcome_rule -> 'successValues')  = 'array')
-            AND (NOT outcome_rule ? 'failureValues'  OR jsonb_typeof(outcome_rule -> 'failureValues')  = 'array')
-            AND (NOT outcome_rule ? 'finalStepLabel' OR jsonb_typeof(outcome_rule -> 'finalStepLabel') = 'string')));
-
-ALTER TABLE tc.retention_policy
-    ADD COLUMN tier text NOT NULL DEFAULT 'FULL',
-    ADD CONSTRAINT retention_policy_tier_ck CHECK (tier IN ('FULL','DIGEST')),
-    ADD CONSTRAINT retention_policy_full_min_ck CHECK (tier <> 'FULL' OR retention >= interval '2 days'),
-    DROP CONSTRAINT retention_policy_table_ck,
-    ADD CONSTRAINT retention_policy_table_ck CHECK (table_name IN
-        ('span','trace_attribute','span_link','trace_summary',
-         'trace_enrichment','trace_correlation','business_operation',
-         'trace_digest','business_operation_digest'));
-
-------------------------------------------------------------------------
--- Configuration: traces that are never digested (unless they belong to a business operation)
-------------------------------------------------------------------------
-CREATE TABLE tc.compaction_exclusion (
-    id                int         GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    service_name      text        COLLATE "C" NULL,       -- root service; NULL = any service
-    root_name_pattern text        COLLATE "C" NOT NULL,   -- SQL LIKE on the root span name
-    description       text        NULL,
-    created_by        text        NOT NULL,
-    created_at        timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT compaction_exclusion_uk         UNIQUE NULLS NOT DISTINCT (service_name, root_name_pattern),
-    CONSTRAINT compaction_exclusion_pattern_ck CHECK (octet_length(root_name_pattern) >= 1)  -- max length: configured
-);
-
-------------------------------------------------------------------------
--- Operational: one row per trace_day, progress of DigestCompactor (§6.8)
-------------------------------------------------------------------------
-CREATE TABLE tc.compaction_state (
-    trace_day           date        PRIMARY KEY,
-    status              text        NOT NULL DEFAULT 'PENDING',
-    last_chunk_end      timestamptz NULL,     -- resume point; = trace_day + 1 day when every chunk is digested
-    traces_digested     bigint      NOT NULL DEFAULT 0,
-    traces_excluded     bigint      NOT NULL DEFAULT 0,
-    operations_digested bigint      NOT NULL DEFAULT 0,
-    started_at          timestamptz NULL,
-    finished_at         timestamptz NULL,
-    error               text        NULL,
-    CONSTRAINT compaction_state_status_ck CHECK (status IN ('PENDING','RUNNING','DONE','FAILED')),
-    CONSTRAINT compaction_state_done_ck   CHECK (status <> 'DONE' OR finished_at IS NOT NULL)
-);
-
-------------------------------------------------------------------------
--- trace_digest: RANGE(trace_day), DAILY. One row per trace. Write-once (DIGEST tier).
-------------------------------------------------------------------------
-CREATE TABLE tc.trace_digest (
-    start_time            timestamptz NOT NULL,   -- = trace_summary.start_time
-    duration_ns           bigint      NOT NULL,
-    compacted_at          timestamptz NOT NULL DEFAULT now(),
-    trace_id              uuid        NOT NULL,
-    business_operation_id uuid        NULL,       -- logical -> business_operation(_digest), root survivor
-    trace_day             date        NOT NULL,   -- = trace_summary.trace_day (partition key)
-    root_service_id       int         NULL,       -- logical -> service.id
-    root_name_id          int         NULL,       -- logical -> span_name.id
-    span_count            int         NOT NULL,
-    error_count           int         NOT NULL,
-    outcome               smallint    NOT NULL,   -- 1 OK (error_count = 0), 2 ERROR
-    service_ids           int[]       NOT NULL,
-    attributes            jsonb       NOT NULL DEFAULT '{}'::jsonb,
-        -- retained keys -> sorted array of distinct transformed values:
-        -- {"user_id":["9f86d081…"],"client_id":["bookstore-web"],"auth.factor":["SMS"]}
-    CONSTRAINT trace_digest_pk         PRIMARY KEY (trace_id, trace_day),
-    CONSTRAINT trace_digest_outcome_ck CHECK (outcome IN (1, 2)),
-    CONSTRAINT trace_digest_counts_ck  CHECK (span_count > 0 AND error_count BETWEEN 0 AND span_count),
-    CONSTRAINT trace_digest_attrs_ck   CHECK (jsonb_typeof(attributes) = 'object')
-) PARTITION BY RANGE (trace_day);
-CREATE INDEX trace_digest_start_idx          ON tc.trace_digest (start_time DESC);
-CREATE INDEX trace_digest_root_svc_start_idx ON tc.trace_digest (root_service_id, start_time DESC);
-CREATE INDEX trace_digest_operation_idx      ON tc.trace_digest (business_operation_id)
-    WHERE business_operation_id IS NOT NULL;
-CREATE INDEX trace_digest_attributes_gin     ON tc.trace_digest USING gin (attributes jsonb_path_ops);
-
-------------------------------------------------------------------------
--- business_operation_digest: RANGE(op_day), DAILY. One row per (survivor) business operation.
-------------------------------------------------------------------------
-CREATE TABLE tc.business_operation_digest (
-    first_seen          timestamptz NOT NULL,
-    last_seen           timestamptz NOT NULL,
-    compacted_at        timestamptz NOT NULL DEFAULT now(),
-    operation_id        uuid        NOT NULL,   -- = business_operation.id (uuidv7, survivor only)
-    op_day              date        NOT NULL,   -- = first_seen::date UTC (partition key)
-    operation_definition_id int         NOT NULL,   -- logical -> business_operation_definition.id
-    trace_count         int         NOT NULL,
-    outcome             smallint    NOT NULL,   -- OperationOutcome: 0 UNKNOWN, 1 SUCCESS, 2 FAILED, 3 INCOMPLETE
-    display_value       text        NOT NULL,
-    outcome_detail      text        NULL,       -- raw outcomeKey value(s), max 512 B
-    steps               jsonb       NOT NULL,
-        -- [{"stepLabel":"first-factor","traceId":"4bf9…","startTime":"2026-11-21T14:03:12.123456Z",
-        --   "durationMs":412,"outcome":"OK"}, …]  ordered by startTime
-    attributes          jsonb       NOT NULL DEFAULT '{}'::jsonb,   -- union of the members' retained attributes
-    CONSTRAINT business_operation_digest_pk         PRIMARY KEY (operation_id, op_day),
-    CONSTRAINT business_operation_digest_day_ck     CHECK (op_day = (first_seen AT TIME ZONE 'UTC')::date),
-    CONSTRAINT business_operation_digest_time_ck    CHECK (last_seen >= first_seen),
-    CONSTRAINT business_operation_digest_outcome_ck CHECK (outcome BETWEEN 0 AND 3),
-    -- outcome_detail is cut to CorrelationLimits.maxDecidingValueLength by the application
-    CONSTRAINT business_operation_digest_steps_ck   CHECK (jsonb_typeof(steps) = 'array'),
-    CONSTRAINT business_operation_digest_attrs_ck   CHECK (jsonb_typeof(attributes) = 'object')
-) PARTITION BY RANGE (op_day);
-CREATE INDEX business_operation_digest_type_first_seen_idx
-    ON tc.business_operation_digest (operation_definition_id, first_seen DESC);
-CREATE INDEX business_operation_digest_type_value_idx
-    ON tc.business_operation_digest (operation_definition_id, display_value);
-CREATE INDEX business_operation_digest_type_outcome_idx
-    ON tc.business_operation_digest (operation_definition_id, outcome, first_seen DESC);
-CREATE INDEX business_operation_digest_attributes_gin
-    ON tc.business_operation_digest USING gin (attributes jsonb_path_ops);
-
-------------------------------------------------------------------------
--- Root of a merge chain: follows business_operation.merged_into to the survivor.
--- Path compression (§6.7) keeps chains at ≤ 1 hop; the depth cap guards against a corrupt cycle.
--- Probes the PK of each retained monthly partition (2–3 under ADR-13) because first_seen is unknown.
-------------------------------------------------------------------------
-CREATE FUNCTION tc.operation_root(p_id uuid) RETURNS uuid
-LANGUAGE sql STABLE PARALLEL SAFE AS $$
-    WITH RECURSIVE chain(id, merged_into, depth) AS (
-        SELECT bo.id, bo.merged_into, 1
-        FROM tc.business_operation bo WHERE bo.id = p_id
-        UNION ALL
-        SELECT bo.id, bo.merged_into, c.depth + 1
-        FROM chain c JOIN tc.business_operation bo ON bo.id = c.merged_into
-        WHERE c.depth < 8
-    )
-    SELECT COALESCE((SELECT id FROM chain WHERE merged_into IS NULL ORDER BY depth LIMIT 1), p_id)
-$$;
-
-------------------------------------------------------------------------
--- Seed: retention tiers (replaces the 003 values) and the default exclusion
-------------------------------------------------------------------------
-UPDATE tc.retention_policy
-SET retention = make_interval(days => ${fullDataDays}), tier = 'FULL';        -- all 7 existing rows
-
-INSERT INTO tc.retention_policy (table_name, retention, partition_granularity, precreate, tier) VALUES
-    ('trace_digest',              make_interval(days => ${fullDataDays} + ${digestDays}), 'DAY', interval '3 days', 'DIGEST'),
-    ('business_operation_digest', make_interval(days => ${fullDataDays} + ${digestDays}), 'DAY', interval '3 days', 'DIGEST');
-
-INSERT INTO tc.compaction_exclusion (service_name, root_name_pattern, description, created_by)
-VALUES (NULL, 'GET /actuator/%', 'Spring Boot actuator probes (health, metrics)', 'system');
-
-UPDATE tc.config_revision SET revision = revision + 1, updated_at = now() WHERE id = 1;
-
-------------------------------------------------------------------------
--- Grants (same role model as §13.2)
-------------------------------------------------------------------------
--- tc_maintenance acts as tc_owner and needs no grants (DigestCompactor, PartitionManager).
-GRANT SELECT ON tc.compaction_exclusion TO tc_ingester, tc_enricher;      -- config snapshot, read-only
-GRANT SELECT, INSERT, UPDATE, DELETE ON tc.compaction_exclusion TO tc_admin;
-GRANT SELECT ON tc.compaction_state TO tc_admin;                          -- ops page: compaction lag
-GRANT EXECUTE ON FUNCTION tc.operation_root(uuid) TO tc_query;            -- read path (§7.7–§7.9)
--- tc_admin already has SELECT, INSERT, UPDATE on indexed_attribute, business_operation_definition and
--- retention_policy, which covers the new columns.
--- tc_query: the 004 ALTER DEFAULT PRIVILEGES already grants SELECT on every new table
--- (trace_digest, business_operation_digest, compaction_exclusion, compaction_state).
-```
-
-**Seeded `retention_policy` after changelog 005** (defaults n = 7, m = 90):
+**Seeded `retention_policy`** (defaults n = 7, m = 90):
 
 | table_name | tier | retention | granularity | Effective life of the data |
 |---|---|---|---|---|
@@ -873,6 +306,17 @@ The control plane keeps the two tiers consistent. `PUT /api/v1/admin/retention-p
 The duplicate ids inside `spanContext` and `parentSpanContext` are validated against the top-level fields. On mismatch the span is counted and the top-level value wins. They are not stored.
 
 `spanContext.remote` and `parentSpanContext.remote` are stored as flag bits (§5.5).
+
+**Surrogate ids (decided 2026-11-22).** Ids are UUIDs except where an integer is the better trade for a disk-heavy system:
+
+| Id | Type | Why |
+|---|---|---|
+| Configuration entities edited by admins and exposed by the API: `kafka_connection`, `enrichment_source`, `business_operation_definition`, `correlation_key`, `compaction_exclusion`; and `business_operation` | `uuid`, version 7 (`DEFAULT uuidv7()`; the application may supply its own) | Not enumerable through the API; created without a round trip; time-ordered, so B-tree inserts stay at the right edge. Copied into `trace_enrichment` and `trace_correlation`, which costs about 25 B per trace. |
+| Dictionaries `attribute_key`, `service`, `span_name` | `int` identity | Compression codes, not entities: they replace a string in the largest tables (`span`, `trace_attribute`, `trace_summary`, `trace_digest`). As UUIDs they would add about 1 KB per trace (≈ 7 %, ≈ 1.4 TB at profile M across both tiers), and a 16-byte code is as long as a typical service name. The API refers to them by name. |
+| `trace_correlation.id`, `trace_enrichment.id` | `bigint` identity | Positions in write order (the resolver reads "after id X"), not identities. |
+| `resource.id`, `instrumentation_scope.id` | `bigint` | xxHash64 of the content, computed by the ingester without a round trip; not generated. A 128-bit hash would add 16 B per span row. |
+| `span_id`; `trace_id` | `bigint`; `uuid` | W3C wire formats. |
+| `config_revision.id`, `correlation_resolver_state.id` | `smallint`, always 1 | Constant key of a one-row table. |
 
 ### 5.2 Time
 
@@ -963,7 +407,7 @@ Consequences:
 
 `links` is a JSON array of `{"traceId","spanId","traceState","attributes"}`. The full list is kept for rendering. Each link is also a row in `span_link`, which serves graph queries.
 
-The span name is resolved through `span_name (service_id, name)`. A service that already has 5,000 names is a cardinality explosion, for example a URL used as the span name. In that case:
+The span name is resolved through `span_name (service_id, name)`. A service that already has the configured maximum of names (default 5,000) is a cardinality explosion, for example a URL used as the span name. In that case:
 - `name_id` is NULL and `name_overflow` holds the name;
 - a metric is emitted.
 
@@ -1374,7 +818,7 @@ The drop gate (§8.7) only trusts `DONE`, which is set **after** phase 2. This o
 
 ```sql
 -- $day date; $chunk_from, $chunk_to, $attr_from, $attr_to timestamptz;
--- $retained_key_ids int[] = indexed_attribute.key_id WHERE retain_in_digest AND status <> 'DISABLED'
+-- $retained_key_ids int[] = indexed_attribute.key_id WHERE retained_in_digest AND status <> 'DISABLED'
 --                           (taken from the same config snapshot as "retained" below; enables the index condition)
 WITH chunk AS (
     SELECT s.trace_id, s.trace_day, s.start_time, s.duration_ns, s.root_service_id, s.root_name_id,
@@ -1387,7 +831,7 @@ retained AS (
     SELECT ia.key_id, k.key, ia.digest_transform
     FROM tc.indexed_attribute ia
     JOIN tc.attribute_key k ON k.id = ia.key_id
-    WHERE ia.retain_in_digest AND ia.status <> 'DISABLED'
+    WHERE ia.retained_in_digest AND ia.status <> 'DISABLED'
 ),
 attr AS (                                     -- distinct transformed values per (trace, key)
     SELECT DISTINCT a.trace_id, r.key,
@@ -1605,7 +1049,7 @@ rule = outcome_rule (may be null)
 OperationOutcome codes: 0 UNKNOWN, 1 SUCCESS, 2 FAILED, 3 INCOMPLETE
 ```
 
-The outcome value is read from `trace_digest.attributes`. The FULL-tier `trace_attribute` rows of the earliest members may already be dropped when the operation closes. Therefore saving an `outcome_rule` with an `outcomeKey` makes the control plane flag that key `retain_in_digest = true` with `digest_transform = 'NONE'`, in addition to the ADR-13 rule that the key must be indexed. The same `OutcomeRule.evaluate` computes the on-the-fly outcome of FULL-tier operations in the API (§7.9).
+The outcome value is read from `trace_digest.attributes`. The FULL-tier `trace_attribute` rows of the earliest members may already be dropped when the operation closes. Therefore saving an `outcome_rule` with an `outcomeKey` makes the control plane flag that key `retained_in_digest = true` with `digest_transform = 'NONE'`, in addition to the ADR-13 rule that the key must be indexed. The same `OutcomeRule.evaluate` computes the on-the-fly outcome of FULL-tier operations in the API (§7.9).
 
 ```sql
 -- BO3: write (same transaction as BO2), then account for the day
@@ -2535,7 +1979,6 @@ In exchange, history with outcomes extends from 30–90 days to 97 days.
 > - **15 TB** is enough with m = 30.
 > - Profile S: 2 TB. Profile L: about 100 TB, which still does not fit comfortably on a single primary (§14).
 > - **Compaction lag eats headroom.** Each day of lag keeps one more FULL-tier day, 1.2 TB at M uncompressed. The 3.9 TB of headroom at M (19.7 − 15.8) therefore absorbs about 3 days of lag, which is why the alert thresholds of §8.7 are 1 and 2 days.
-> - **Rollout.** When changelog 005 shortens retention, PartitionManager drops the old 14-, 30- and 90-day tails gradually, as soon as the drop gate allows. Compaction starts with the oldest trace day still present in `trace_summary`. Until the backlog is compacted, the disk keeps the old footprint.
 
 ### 9.4 Write throughput, WAL and IOPS (profile M)
 
@@ -2891,40 +2334,18 @@ CREATE ROLE tc_query       LOGIN;                      -- tc-query-api, replica 
 
 ### 13.2 Grants (`004-grants.sql`)
 
-```sql
-REVOKE ALL ON SCHEMA tc FROM PUBLIC;
-GRANT USAGE ON SCHEMA tc TO tc_ingester, tc_enricher, tc_admin, tc_query;
-GRANT TEMPORARY ON DATABASE tracing TO tc_ingester;
+`004-grants.sql` is the reference; `RolesAndGrantsIT` compares every role's table privileges with the full expected list. In short:
 
-GRANT SELECT ON tc.attribute_key, tc.indexed_attribute, tc.business_operation_definition, tc.correlation_key,
-                tc.retention_policy, tc.config_revision, tc.enrichment_source,
-                tc.enrichment_source_revision, tc.kafka_connection
-      TO tc_ingester, tc_enricher;
+| Role | May |
+|---|---|
+| `tc_ingester` | read the configuration snapshot (`attribute_key`, `indexed_attribute`, `business_operation_definition`, `correlation_key`, `retention_policy`, `config_revision`, `enrichment_source`, `enrichment_source_revision`, `kafka_connection`, `compaction_exclusion`); read and insert `service`, `span_name`, `instrumentation_scope`, `span`, `trace_attribute`, `span_link`, `trace_correlation`; insert `attribute_key` and update only its `value_type`; read, insert and update `resource` (only `last_seen`) and `trace_summary` |
+| `tc_enricher` | read the configuration snapshot; read and insert `trace_enrichment`, `trace_attribute`, `trace_correlation` |
+| `tc_admin` | read, insert and update the configuration tables; only insert source revisions (they are append-only); delete `correlation_key` and `compaction_exclusion` rows; read `service`, `span_name`, `compaction_state` |
+| `tc_query` | read every table except `kafka_connection` and `shedlock`, including tables created later (`ALTER DEFAULT PRIVILEGES FOR ROLE tc_owner`); execute `tc.operation_root(uuid)` |
 
--- tc_ingester
-GRANT SELECT, INSERT ON tc.service, tc.span_name, tc.instrumentation_scope TO tc_ingester;
-GRANT INSERT, UPDATE (value_type) ON tc.attribute_key TO tc_ingester;
-GRANT SELECT, INSERT, UPDATE (last_seen) ON tc.resource TO tc_ingester;
-GRANT SELECT, INSERT ON tc.span, tc.trace_attribute, tc.span_link, tc.trace_correlation TO tc_ingester;
-GRANT SELECT, INSERT, UPDATE ON tc.trace_summary TO tc_ingester;
+`REVOKE ALL ON SCHEMA tc FROM PUBLIC` leaves the schema to these roles. `tc_migrator` and `tc_maintenance` act as `tc_owner` and need no grants.
 
--- tc_enricher
-GRANT SELECT, INSERT ON tc.trace_enrichment, tc.trace_attribute, tc.trace_correlation TO tc_enricher;
-
--- tc_admin (control plane); revisions are append-only
-GRANT SELECT, INSERT, UPDATE ON tc.kafka_connection, tc.enrichment_source, tc.attribute_key,
-                               tc.indexed_attribute, tc.business_operation_definition, tc.correlation_key,
-                               tc.retention_policy, tc.config_revision TO tc_admin;
-GRANT SELECT, INSERT ON tc.enrichment_source_revision TO tc_admin;
-GRANT DELETE ON tc.correlation_key TO tc_admin;
-GRANT SELECT ON tc.service, tc.span_name TO tc_admin;
-
--- tc_query (read-only; the grants replicate to the standby)
-GRANT SELECT ON ALL TABLES IN SCHEMA tc TO tc_query;
-ALTER DEFAULT PRIVILEGES FOR ROLE tc_owner IN SCHEMA tc GRANT SELECT ON TABLES TO tc_query;
-REVOKE SELECT ON tc.kafka_connection, tc.shedlock FROM tc_query;
--- Changelog 005 (ADR-13) adds grants for compaction_exclusion, compaction_state and tc.operation_root(); see §4.7.
-```
+> **Deviation (2026-11-22, Phase 2).** `GRANT TEMPORARY ON DATABASE tracing TO tc_ingester` (for the ingester's session staging tables) is a database-level privilege that only the database owner can grant, not `tc_owner`; it belongs to infrastructure-as-code. PostgreSQL grants `TEMPORARY` to `PUBLIC` by default, so it is needed only where that default was revoked.
 
 Notes on these grants:
 - Access *through* a partitioned parent is checked on the parent only, so partitions need no grants of their own.
@@ -3081,7 +2502,7 @@ All deviations are additive or clarifying. No table or column defined in the bri
 3. **Extra constraints.**
    - `UNIQUE (operation_definition_id, key_id)` on `correlation_key`.
    - A deferrable composite FK from `enrichment_source (id, current_revision)` to `enrichment_source_revision`.
-   - CHECK constraints for enums, lengths and singleton tables.
+   - CHECK constraints for enums, non-empty names and singleton tables (no maximum lengths: those are configured).
    - A CHECK that forbids inline secrets in `client_properties`.
 4. **`COLLATE "C"`** on `trace_attribute.value_str`, `trace_correlation.value`, `correlation_value.value`, `attribute_key.key`, `service.name` and `span_name.name`. It gives byte-order B-tree prefix search.
 5. **Index value cap of 512 bytes** on `trace_attribute.value_str` and `trace_correlation.value`, cut on a UTF-8 boundary. It keeps entries well below the B-tree tuple limit and is marked by the `INDEX_VALUE_TRUNCATED` flag. Span attributes keep the 4 KiB limit.
@@ -3099,17 +2520,17 @@ All deviations are additive or clarifying. No table or column defined in the bri
 15. **ADR-13 two-tier retention (requested by the user).** This changes the brief's retentions of 14, 30 and 90 days.
     - **FULL tier:** every existing data table is kept n = 7 days (`fullDataDays`, minimum 2).
     - **DIGEST tier:** `trace_digest` and `business_operation_digest` are kept until n + m = 97 days (`digestDays` = 90). `retention_policy` stores the *total* age n + m in DIGEST rows and n in FULL rows.
-    - **Changelog `005-two-tier-retention.sql`** (§4.7) adds:
-      - columns `indexed_attribute.retain_in_digest` and `digest_transform`;
+    - **The schema** (§4.7) adds:
+      - columns `indexed_attribute.retained_in_digest` and `digest_transform`;
       - column `business_operation_definition.outcome_rule`;
       - column `retention_policy.tier`;
-      - tables `trace_digest`, `business_operation_digest`, `compaction_exclusion` (seeded with `GET /actuator/%`) and `compaction_state`;
+      - tables `trace_digest`, `business_operation_digest`, `compaction_exclusion` (seeded from `tc.compaction.initial-exclusions`, empty by default) and `compaction_state`;
       - the function `tc.operation_root(uuid)`.
     - **DigestCompactor** (§6.8), the drop gate (§8.7) and cross-tier reads (§7.7–§7.9) implement it.
     - **Refinements of the ADR-13 addendum made in this document:**
       - Each 1-hour chunk reads retained attribute values with `ts` up to `chunk end + 6 h` (`tc.compaction.attribute-lookahead`) inside the ADR's day window `[D − 1 h, D + 1 day + 6 h)`. This avoids re-reading the whole window per chunk; the drop gate still protects the full day window.
       - `trace_correlation` partitions and `correlation_value` rows are held `max(merge_window) + 1 day` beyond the FULL-tier gate, so step labels and value maps still exist when operations are compacted.
       - `compaction_state` turns `DONE` only after the operations phase.
-      - Saving an outcome rule with `outcomeKey` also flags that key `retain_in_digest` with transform NONE, because operation outcomes are evaluated from `trace_digest.attributes`.
+      - Saving an outcome rule with `outcomeKey` also flags that key `retained_in_digest` with transform NONE, because operation outcomes are evaluated from `trace_digest.attributes`.
       - Equality search on MASK-transformed keys is not supported in the DIGEST tier.
     - **Capacity at M:** 19.7 TB with 25 % headroom (17.3 TB with inline lz4), compared with 23.5 TB before. The provisioning recommendation is 20 TB per node instead of 24 TB (§9.3.2).

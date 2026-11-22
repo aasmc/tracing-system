@@ -23,7 +23,7 @@ Names of tables, columns, topics, endpoints and use-case IDs follow the design b
 | Base package | `ru.aasmc.tracing.collector` (abbreviated below as `…collector`) |
 | Java | 25 (`maven.compiler.release=25`). Records, sealed interfaces and pattern-matching `switch` are used freely. No preview features. |
 | JSON | Jackson 3.1 (`tools.jackson.core`, `tools.jackson.databind`). Exceptions are unchecked (`tools.jackson.core.JacksonException`). |
-| SQL access | `JdbcClient` and `JdbcTemplate` for statements. PgJDBC `CopyManager` for bulk. Spring Data repositories only in `tc-control-plane` (optional). |
+| SQL access | `NamedParameterJdbcTemplate` for statements (named parameters, and `batchUpdate` for row batches, which `JdbcClient` lacks). The code sketches in this document use `JdbcClient`'s fluent style only for brevity. PgJDBC `CopyManager` for bulk. Spring Data repositories only in `tc-control-plane` (optional). |
 | Time | All DB sessions run with `TimeZone=UTC`. Partition bounds are UTC. |
 | Metrics prefix | `tc_` (Micrometer, Prometheus registry) |
 | SQL schema | `tc`, always schema-qualified in statements |
@@ -418,9 +418,10 @@ SELECT id, key FROM tc.attribute_key WHERE key = ANY(?);      -- keys not return
 **Rules.**
 - `attribute_key` is resolved only for keys that need an id. That means indexed keys and correlation keys; ordinary span attributes stay as text inside `attributes jsonb`. This keeps the dictionary small.
 - **Cardinality guard for `span_name`:**
-  - `DictionaryCache` keeps `countByService` (loaded with `SELECT service_id, count(*) FROM tc.span_name GROUP BY 1` at startup and incremented on insert).
-  - When a service reaches 5 000 names, new names are not inserted: `name_id = NULL`, `name_overflow = name`, metric `tc_ingest_span_name_overflow_total{service}`.
-  - The guard is soft: concurrent pods may overshoot by a few names.
+  - `DictionaryRepository.spanNameIds(serviceId, names, maxNamesPerService)` enforces the limit (configured, default 5 000) inside the insert: `LIMIT greatest(:max - (SELECT count(*) FROM tc.span_name WHERE service_id = :id), 0)`. A name beyond the limit gets no id.
+  - The ingester then stores the span with `name_id = NULL`, `name_overflow = name`, and counts metric `tc_ingest_span_name_overflow_total{service}`.
+  - The guard is soft: callers inserting at the same moment may overshoot by the few names they insert together.
+  - *Deviation (2026-11-22, Phase 2):* the design kept a `countByService` cache in `DictionaryCache`; counting in the insert statement is exact across pods, needs no cache, and costs nothing on cache hits, because only names missing from the cache reach the database.
 - Caches: Caffeine, `maximumSize` 10 000 services, 1 000 000 span names, 100 000 attribute keys. Entries are never invalidated, because ids are immutable.
 
 ### 2.10 `TraceDayResolver`
@@ -1909,7 +1910,7 @@ The DIGEST response is `{"traceId": "…", "tier": "DIGEST", "spansExpired": tru
 | `spanName` (root) | `d.root_name_id = ANY(:name_ids)` (all `span_name` ids with that name, for the service if given) | filter |
 | `minDurationMs` / `maxDurationMs` | `d.duration_ns >= :min AND d.duration_ns <= :max` | filter |
 | `status` | `ERROR` → `d.outcome = 2`; `OK`/`UNSET` → `d.outcome = 1` | filter |
-| key not retained (`retain_in_digest = false`), or op `PREFIX`/`GT`/`GTE`/`LT`/`LTE`, or a `MASK` key | not translatable: **the whole DIGEST part is skipped** and `warnings += {code: "DIGEST_TIER_UNSUPPORTED_PREDICATE", key}` | — |
+| key not retained (`retained_in_digest = false`), or op `PREFIX`/`GT`/`GTE`/`LT`/`LTE`, or a `MASK` key | not translatable: **the whole DIGEST part is skipped** and `warnings += {code: "DIGEST_TIER_UNSUPPORTED_PREDICATE", key}` | — |
 
 4. **Hashing.** For a retained key with `digest_transform = SHA256`, `DigestTransform.SHA256.apply` replaces every query value by `HexFormat.of().formatHex(SHA-256(value.getBytes(UTF_8)))`, which is exactly what the compactor stored (`encode(sha256(convert_to(v, 'UTF8')), 'hex')`, §6.7). EQ on a PII key remains allowed (§4.11); the audit log records the key, never the value or its hash.
 5. **Execute** FULL first (newer rows), then DIGEST, in one request until `limit + 1` rows are collected:
@@ -2260,7 +2261,7 @@ public RetentionTiersView updateTiers(RetentionTiers req, String user) {
   - `digestTransform` ∈ {NONE, SHA256, MASK} → `INVALID_DIGEST_TRANSFORM`.
   - PII classes come from the PII policy (`tc.pii.keys`, classes PERSONAL / SECRET, see 05 §7.3). A **PERSONAL** key with `retainInDigest = true` and `NONE` requires `acknowledgePii = true` → `PERSONAL_DATA_RETAINED_IN_CLEAR`. A **SECRET** key with `NONE` is always refused → `SECRET_RETAINED_IN_CLEAR`.
   - Changing `digestTransform` of a key that is already retained requires `force = true` → `409 /problems/digest-transform-change`: digests compacted before the change keep the old form, so DIGEST-tier equality search finds only one form.
-  - `status = DISABLED` while `retain_in_digest = true` → `409 /problems/retained-key-must-be-indexed` (unset the flag first, or in the same request).
+  - `status = DISABLED` while `retained_in_digest = true` → `409 /problems/retained-key-must-be-indexed` (unset the flag first, or in the same request).
 - The flag is not retroactive: days already DONE are not re-compacted.
 
 **Outcome rule on business operation definitions.** `POST /business-operation-definitions` and `PUT /business-operation-definitions/{id}` accept an optional `outcomeRule` (stored in `business_operation_definition.outcome_rule`):
@@ -2273,7 +2274,7 @@ public RetentionTiersView updateTiers(RetentionTiers req, String user) {
 | # | Rule | Error code |
 |---|---|---|
 | O1 | All fields optional; unknown fields rejected | `INVALID_OUTCOME_RULE` |
-| O2 | `outcomeKey`, if set, is an indexed key (status ACTIVE or BACKFILLING): the compactor reads it from `trace_attribute`. Saving the rule automatically sets that key to `retain_in_digest = true` with `digest_transform = NONE` if it is not retained yet (04 §6), so the outcome value also appears in the digest. Outcome values should be business codes, not identifiers | `OUTCOME_KEY_NOT_INDEXED` |
+| O2 | `outcomeKey`, if set, is an indexed key (status ACTIVE or BACKFILLING): the compactor reads it from `trace_attribute`. Saving the rule automatically sets that key to `retained_in_digest = true` with `digest_transform = NONE` if it is not retained yet (04 §6), so the outcome value also appears in the digest. Outcome values should be business codes, not identifiers | `OUTCOME_KEY_NOT_INDEXED` |
 | O3 | `successValues` / `failureValues`: ≤ 50 strings each, ≤ 512 chars, disjoint; they require `outcomeKey` | `INVALID_OUTCOME_VALUES` |
 | O4 | `finalStepLabel`, if set, equals the `step_label` of one of the type's `correlation_key` rows | `UNKNOWN_STEP_LABEL` |
 | O5 | `merge_window` (existing rule, now bounded by the tiers): between 1 min and `fullDataDays` − 1 day | `INVALID_MERGE_WINDOW` |
@@ -2284,7 +2285,7 @@ A rule change applies to operations compacted afterwards; existing `business_ope
 
 | Method and path | Description |
 |---|---|
-| `GET /compaction-exclusions` | List (seed row: `root_name_pattern = 'GET /actuator/%'`, any service) |
+| `GET /compaction-exclusions` | List (seed rows from `tc.compaction.initial-exclusions`, any service; none by default) |
 | `POST /compaction-exclusions` | Body `{serviceName?, rootNamePattern, description}`; `created_by` from the JWT |
 | `GET/PUT/DELETE /compaction-exclusions/{id}` | Read, replace, delete |
 
@@ -2650,7 +2651,7 @@ class DigestCompactor {
     private static final Duration LOCK_EXTENSION = Duration.ofMinutes(30);
 
     private final CompactionStateRepository state;      // tc.compaction_state
-    private final RetainedKeyRepository retainedKeys;   // indexed_attribute WHERE retain_in_digest
+    private final RetainedKeyRepository retainedKeys;   // indexed_attribute WHERE retained_in_digest
     private final RetentionTiers tiers;                 // fullDataDays / digestDays from retention_policy
     private final DigestChunkWriter chunks;             // SQL below
     private final OperationDigestWriter operations;     // business_operation_digest
@@ -2766,9 +2767,9 @@ ins AS (
 SELECT (SELECT count(*) FROM ins) AS digested, (SELECT count(*) FROM chunk) AS seen;   -- excluded = seen - digested
 ```
 
-- `tc.operation_root(uuid)` (SQL function, changelog 005) follows `business_operation.merged_into` to the survivor, at most 8 hops; normally `correlation_value` already points at the survivor (§6.3).
+- `tc.operation_root(uuid)` (SQL function, changelog 002) follows `business_operation.merged_into` to the survivor, at most 8 hops; normally `correlation_value` already points at the survivor (§6.3).
 - A trace correlated to several operations (different business operation definitions) records the earliest one.
-- `attributes` holds only keys with `retain_in_digest = true` at the time of compaction. Values arriving in `trace_attribute` outside the read window are not captured (documented trade-off).
+- `attributes` holds only keys with `retained_in_digest = true` at the time of compaction. Values arriving in `trace_attribute` outside the read window are not captured (documented trade-off).
 - Chunk cost at M: ≈ 3.6 M `trace_summary` rows plus the retained-key range of `trace_attribute`; target ≤ 2 min per chunk, ≈ 20–40 min per day (ASSUMPTION, benchmark in 04).
 
 **Business operations (`OperationDigestWriter`).** After the day loop, in batches of `operation-batch-size` (default 5 000), one transaction per batch:
@@ -2815,7 +2816,7 @@ tc:
 **Error handling.**
 - Chunk failure (statement timeout, serialization or deadlock error, unexpected data): the chunk transaction rolls back, the day becomes `FAILED` with `error`, later days continue, and the day is retried after `retry-failed-after`. The drop gate keeps the day's FULL data, so a failure costs disk only.
 - Transient DB errors (primary failover, `57P01`): the run aborts; the next scheduled run resumes from `last_chunk_end`.
-- `retain_in_digest` keys or exclusions changed during a day: the snapshot is taken per run; chunks processed later use the new configuration (not retroactive).
+- `retained_in_digest` keys or exclusions changed during a day: the snapshot is taken per run; chunks processed later use the new configuration (not retroactive).
 - Ingest catch-up has priority: while `tc-ingester` lag exceeds `pause-while-ingest-lag-above`, the run exits after the current chunk.
 
 ---
@@ -2829,11 +2830,11 @@ tc:
 - Seed the configuration rows:
   - `config_revision(id=1, revision=0)`
   - `correlation_resolver_state(id=1, last_processed_id=0)`
-  - the default `retention_policy` rows (ADR-13; n = `tc.retention.full-days` = 7, m = `tc.retention.digest-days` = 90; precreate 3 d):
+  - the default `retention_policy` rows (ADR-13; n = `tc.retention.full-data-days` = 7, m = `tc.retention.digest-days` = 90; precreate 3 d):
     - tier FULL, retention n = 7 d: span HOUR, trace_attribute HOUR, span_link DAY, trace_summary DAY, trace_enrichment DAY, trace_correlation DAY, business_operation MONTH (`correlation_value` follows `business_operation`, §6.2)
     - tier DIGEST, retention n + m = 97 d (total age): trace_digest DAY, business_operation_digest DAY
   - built-in `attribute_key` / `indexed_attribute` rows for `service.name`, `span.name`, `status`
-  - the default `compaction_exclusion` row (`root_name_pattern = 'GET /actuator/%'`, any service)
+  - the initial `compaction_exclusion` rows from `tc.compaction.initial-exclusions` (comma-separated root-name patterns, any service; none by default)
   - `compaction_state` rows are not seeded; `DigestCompactor` creates them (§6.7)
 
 ### 7.2 Layout and rules
@@ -2842,18 +2843,16 @@ tc:
 tc-schema-changelog/src/main/resources/db/changelog/     # authoritative list and DDL: 04 §4 (packaged into tc-schema-migrator)
   db.changelog-master.yaml                -- includes the files below in order
   changes/001-control-plane-and-dictionaries.sql
-                                          -- configuration tables, dictionaries, operational tables
-                                          --   (config_revision, correlation_resolver_state, shedlock), correlation_value,
+                                          -- configuration tables (incl. retention_policy with its tier,
+                                          --   compaction_exclusion), dictionaries, correlation_value, operational tables
+                                          --   (config_revision, correlation_resolver_state, shedlock, compaction_state),
                                           --   tc.try_float8(text)
-  changes/002-partitioned-data-tables.sql -- span, trace_summary, trace_attribute, span_link, trace_enrichment,
-                                          --   trace_correlation, business_operation (parents + parent indexes only)
-  changes/003-seed.sql                    -- built-in keys, retention defaults, singleton rows
-  changes/004-grants.sql                  -- privileges for tc_* application roles (runOnChange:true)
-  changes/005-two-tier-retention.sql      -- ADR-13: retention_policy.tier, indexed_attribute.retain_in_digest /
-                                          --   digest_transform, business_operation_definition.outcome_rule, trace_digest,
-                                          --   business_operation_digest (parents + indexes incl. GIN), compaction_exclusion,
-                                          --   compaction_state, tc.operation_root(uuid); re-seeds retention rows
-                                          --   from the ${fullDataDays}/${digestDays} changelog parameters
+  changes/002-partitioned-data-tables.sql -- parents + parent indexes of span, trace_summary, trace_attribute, span_link,
+                                          --   trace_enrichment, trace_correlation, business_operation, trace_digest,
+                                          --   business_operation_digest; tc.operation_root(uuid)
+  changes/003-seed.sql                    -- singleton rows, retention of both tiers from the ${fullDataDays} /
+                                          --   ${digestDays} changelog parameters, built-in keys, default exclusion
+  changes/004-grants.sql                  -- every privilege of the tc_* application roles (runOnChange:true)
 ```
 
 **Migration rules.**
@@ -2862,8 +2861,8 @@ tc-schema-changelog/src/main/resources/db/changelog/     # authoritative list an
    1. `CREATE INDEX … ON ONLY tc.span (…)` creates an invalid parent index.
    2. For each partition: `CREATE INDEX CONCURRENTLY …`, then `ALTER INDEX parent_idx ATTACH PARTITION child_idx`.
    3. The parent index becomes valid when every partition is attached.
-3. Every DDL changeset starts with `SET LOCAL lock_timeout = '5s'`. Liquibase serialises concurrent migrator runs through its `databasechangeloglock` table; a lock left behind by a killed Job is released with the documented runbook step (`liquibase releaseLocks`, or `UPDATE tc.databasechangeloglock SET locked = false` after confirming no migrator runs). Applied changesets are immutable (checksums are validated on every run).
-4. Services do **not** run Liquibase: they do not have it on the classpath, and `spring.liquibase.enabled=false` is set defensively. Each service has a `SchemaVersionGuard`. At startup it runs `SELECT 1 FROM tc.databasechangelog WHERE author = 'tc' AND id = :required` and refuses readiness if the changeset the build requires (`tc.schema.required-changeset`, e.g. `005-40-grants-digest`) has not been applied.
+3. Every changeset that alters an existing table starts with `SET LOCAL lock_timeout = '5s'`. Liquibase serialises concurrent migrator runs through its `databasechangeloglock` table; a lock left behind by a killed Job is released with the documented runbook step (`liquibase releaseLocks`, or `UPDATE tc.databasechangeloglock SET locked = false` after confirming no migrator runs). Applied changesets are immutable (checksums are validated on every run).
+4. Services do **not** run Liquibase: they do not have it on the classpath, and `spring.liquibase.enabled=false` is set defensively. Each service has a `SchemaVersionGuard`. At startup it runs `SELECT 1 FROM tc.databasechangelog WHERE author = 'tc' AND id = :required` and refuses readiness if the changeset the build requires (`tc.schema.required-changeset`, e.g. `003-04-initial-compaction-exclusions`) has not been applied.
 
 ```yaml
 spring:
@@ -2874,8 +2873,9 @@ spring:
     change-log: classpath:db/changelog/db.changelog-master.yaml
     default-schema: tc
     liquibase-schema: tc             # databasechangelog / databasechangeloglock live in tc (schema pre-created by IaC)
+    analytics-enabled: false         # Liquibase 5 sends anonymous usage analytics unless disabled
     parameters:
-      fullDataDays: ${tc.retention.full-days}
+      fullDataDays: ${tc.retention.full-data-days}
       digestDays: ${tc.retention.digest-days}
   datasource:
     url: jdbc:postgresql://tc-pg-primary:5432/tracing
@@ -2886,8 +2886,8 @@ spring:
 tc:
   migrator:
     ensure-partitions: true
-  retention:                   # seed values only (changelog 005); at runtime use PUT /retention-policies/tiers
-    full-days: 7
+  retention:                   # seed the first installation only; at runtime use PUT /retention-policies/tiers
+    full-data-days: 7
     digest-days: 90
 ```
 
@@ -3042,7 +3042,7 @@ export const useTraceSearch = (req: TraceSearchRequest) =>
 | Module | Packages | Content |
 |---|---|---|
 | `tc-domain` | `…collector.domain` | Pure Java value objects, aggregates, policies and state machines (package list in 05): ids and spans, attributes and their limits, `ResourceHasher`, `EnrichmentSourceDefinition` (`TraceContextSource`, `FieldMapping`, `Transform`, `extract`), `IndexedAttribute`, `SensitivityPolicy`, `DigestTransform`, `BusinessOperationDefinition`, `OutcomeRule` (`evaluate`, shared by `tc-maintenance` and `tc-query-api`), `OperationLinker`, `RetentionTiers`, `DigestProgress`. No Spring dependencies. |
-| `tc-persistence` | `…collector.persistence.{config,dictionary,partition,sql}` | JDBC repositories (`JdbcClient`) for config tables, `ConfigRevisionRepository`, `ConfigSnapshotLoader` (shared by ingester/enricher/query), `PartitionDdl` + `PartitionCatalog` (shared by maintenance/migrator), `SchemaVersionGuard`, SQL constants, PG array helpers, `SqlStateClassifier` |
+| `tc-persistence` | `…collector.persistence.{config,dictionary,partition,sql}` | JDBC repositories (`NamedParameterJdbcTemplate`) for config tables, `ConfigRevisionRepository`, `ConfigSnapshotLoader` (shared by ingester/enricher/query), `PartitionDdl` + `PartitionCatalog` (shared by maintenance/migrator), `SchemaVersionGuard`, SQL constants, PG array helpers, `SqlStateClassifier` |
 | `tc-kafka-support` | `…collector.kafka`, `…collector.enrich.extract` | `KafkaClientPropertiesBuilder` (connection + secrets → client props, allow-list), `SecretResolver` SPI + Vault/k8s implementations, `TopicGuard`, DLQ helpers (`DlqHeaders`, reason enums), and the **extraction engine** (`ExtractionPlanCompiler`, `TraceContextExtractor` strategies, `FieldExtractor`, `ValueTransform`, `PayloadDecoder` SPI) shared by `tc-enricher` and `tc-control-plane` (SD-4) |
 
 ### 9.2 Maven multi-module layout

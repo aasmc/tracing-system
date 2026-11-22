@@ -1,5 +1,0 @@
-# Spike 0-11 (09 §1.2). The module's single test context runs the REAL master changelog through Spring Boot's
-# Liquibase auto-configuration, followed by throw-away changesets that exercise the conventions of 04 §4.0.
-databaseChangeLog:
-  - include: { file: classpath:db/changelog/db.changelog-master.yaml }
-  - include: { file: spike-conventions.sql, relativeToChangelogFile: true }

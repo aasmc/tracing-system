@@ -44,6 +44,7 @@ public final class BusinessOperationBuilder {
     }
 
     public BusinessOperation build() {
-        return new BusinessOperation(id, firstSeen, lastSeen, 1, displayValue, traceCount, null);
+        return new BusinessOperation(
+                id, firstSeen, lastSeen, IdpScenario.DEFINITION_ID, displayValue, traceCount, null);
     }
 }

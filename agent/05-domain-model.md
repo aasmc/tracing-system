@@ -86,7 +86,7 @@ The terms below are used with exactly these meanings in code, API, UI and docume
 | **Digest tier** | The compact history kept after the full tier ends: `trace_digest` and `business_operation_digest`. Kept `digestDays` = m days (default 90) **after** the full tier, so a digest day is dropped when it is older than n + m days (default 97). `digestDays = 0` disables the tier. | `RetentionTier.DIGEST`; `retention_policy.tier = 'DIGEST'` |
 | **Trace Digest** | One row per trace in the digest tier: start, duration, root service and name, span and error counts, services, trace outcome, business operation id, and the retained attributes. No spans, events, links or enrichment lineage. About 0.5 KB per trace (capacity in 04 §9). | `TraceDigest`; `tc.trace_digest` |
 | **Business Operation Digest** | One row per root business operation in the digest tier: type, display value, first/last seen, trace count, **operation outcome**, ordered steps (one per member trace) and the union of the members' retained attributes. | `BusinessOperationDigest`; `tc.business_operation_digest` |
-| **Retained attribute** | An indexed attribute key flagged `retain_in_digest = true`. Its values are copied from `trace_attribute` into `trace_digest.attributes` at compaction. A retained key must be indexed: compaction never reads spans. Flagging a key is **not retroactive** for already-compacted days. | `IndexedAttribute.retainedInDigest`; `indexed_attribute.retain_in_digest` |
+| **Retained attribute** | An indexed attribute key flagged `retained_in_digest = true`. Its values are copied from `trace_attribute` into `trace_digest.attributes` at compaction. A retained key must be indexed: compaction never reads spans. Flagging a key is **not retroactive** for already-compacted days. | `IndexedAttribute.retainedInDigest`; `indexed_attribute.retained_in_digest` |
 | **Digest transform** | How a retained value is stored in the digest: `NONE` (as is), `SHA256` (lowercase hex of SHA-256 over the UTF-8 value) or `MASK` (first 2 chars + `***`). It lets PII stay joinable (SHA256) or recognisable (MASK) without keeping the raw value for n + m days. | `DigestTransform`; `indexed_attribute.digest_transform` |
 | **Outcome rule** | Per business operation definition, optional: how to derive the outcome of a business operation at compaction from `outcomeKey` + `successValues` / `failureValues`, member errors, and `finalStepLabel`. Evaluated in a fixed order (§4.10). | `OutcomeRule`; `business_operation_definition.outcome_rule jsonb` |
 | **Operation outcome** | Result of the outcome rule for one business operation: `UNKNOWN` (0), `SUCCESS` (1), `FAILED` (2), `INCOMPLETE` (3). The trace-level counterpart is the **trace outcome**: `OK` (1, `error_count = 0`) or `ERROR` (2). | `OperationOutcome`, `TraceOutcome`; `business_operation_digest.outcome`, `trace_digest.outcome` |
@@ -152,7 +152,7 @@ flowchart LR
     CFG -- "Customer/Supplier: config tables + config_revision (Open Host: ConfigSnapshot)" --> ING
     CFG -- "Customer/Supplier: enrichment_source revisions" --> ENR
     CFG -- "business_operation_definition / correlation_key" --> COR
-    CFG -- "retention_policy (tiers), indexed_attribute (retain_in_digest), outcome_rule, compaction_exclusion" --> RET
+    CFG -- "retention_policy (tiers), indexed_attribute (retained_in_digest), outcome_rule, compaction_exclusion" --> RET
 
     ING -- "trace_correlation (published table)" --> COR
     ENR -- "trace_correlation (published table)" --> COR
@@ -510,8 +510,8 @@ classDiagram
     }
     class CorrelationObservation {
         +Instant observedAt
-        +int operationDefinitionId
-        +int correlationKeyId
+        +UUID operationDefinitionId
+        +UUID correlationKeyId
         +String value
         +TraceId traceId
     }
@@ -629,7 +629,7 @@ classDiagram
         +UUID id
         +Instant firstSeen
         +Instant lastSeen
-        +int operationDefinitionId
+        +UUID operationDefinitionId
         +String displayValue
         +int traceCount
         +UUID mergedInto
@@ -773,7 +773,7 @@ public record SecretRef(String uri) {
     }
 }
 
-public record KafkaConnectionId(long value) {}
+public record KafkaConnectionId(UUID value) {}
 
 public record KafkaConnection(KafkaConnectionId id, String name, String bootstrapServers,
                               SecurityProtocol securityProtocol, SaslMechanism saslMechanism,
@@ -935,7 +935,7 @@ stateDiagram-v2
 
 Backfill progress is stored in `indexed_attribute.backfill_cursor timestamptz`, the lower bound of the oldest span partition already backfilled. This column is an **addition** to the brief's `indexed_attribute` definition. It makes `AttributeBackfill` resumable after a `tc-maintenance` leader change (UC-07, SD-09).
 
-**Retained keys (ADR-13).** `retain_in_digest` and `digest_transform` are new columns of `indexed_attribute` (`boolean NOT NULL DEFAULT false`, `text NOT NULL DEFAULT 'NONE' CHECK IN ('NONE','SHA256','MASK')`). Rules:
+**Retained keys (ADR-13).** `retained_in_digest` and `digest_transform` are new columns of `indexed_attribute` (`boolean NOT NULL DEFAULT false`, `text NOT NULL DEFAULT 'NONE' CHECK IN ('NONE','SHA256','MASK')`). Rules:
 
 - Retaining a key that is not indexed makes the control plane create the `indexed_attribute` row in BACKFILLING first (UC-07, UC-23).
 - Enrichment-derived values are covered, because indexed ENRICHMENT keys are already written to `trace_attribute` (origin 3).
@@ -961,7 +961,7 @@ package ru.aasmc.tracing.collector.domain.correlation;
 public enum KeyRole { PRIMARY, ALIAS }
 
 /** stepLabel: null or not blank (INVALID_OPERATION_DEFINITION); its length is configured in CorrelationLimits. */
-public record CorrelationKey(int id, AttributeKey key, KeyRole role, String stepLabel) { ... }
+public record CorrelationKey(UUID id, AttributeKey key, KeyRole role, String stepLabel) { ... }
 
 /**
  * name follows Names (INVALID_NAME); mergeWindow is positive (INVALID_MERGE_WINDOW); at least one PRIMARY key, no key id
@@ -970,7 +970,7 @@ public record CorrelationKey(int id, AttributeKey key, KeyRole role, String step
  * Name length, merge-window bounds, number of keys and outcome-rule sizes are configured in CorrelationLimits
  * (CorrelationLimits.requireWithin), never hard-coded.
  */
-public record BusinessOperationDefinition(int id, String name, Duration mergeWindow, List<CorrelationKey> keys,
+public record BusinessOperationDefinition(UUID id, String name, Duration mergeWindow, List<CorrelationKey> keys,
                                           OutcomeRule outcomeRule) { ... }
 ```
 
@@ -1031,14 +1031,14 @@ A single attribute key may belong to several business operation definitions (`UN
 package ru.aasmc.tracing.collector.domain.correlation;
 
 /** "trace T carried value V at time t": a row of tc.trace_correlation (append-only). Value length: CorrelationLimits. */
-public record CorrelationObservation(Instant observedAt, int operationDefinitionId, int correlationKeyId,
+public record CorrelationObservation(Instant observedAt, UUID operationDefinitionId, UUID correlationKeyId,
                                      String value, TraceId traceId) { ... }
 
 /**
  * Row of tc.business_operation. Rules (INVALID_BUSINESS_OPERATION): id is a version-7 UUID; firstSeen <= lastSeen;
  * traceCount >= 0; never merged into itself. displayValue null = provisional.
  */
-public record BusinessOperation(UUID id, Instant firstSeen, Instant lastSeen, int operationDefinitionId,
+public record BusinessOperation(UUID id, Instant firstSeen, Instant lastSeen, UUID operationDefinitionId,
                                 String displayValue, int traceCount, UUID mergedInto) {
     public BusinessOperation includeObservation(Instant observedAt, String primaryValueOrNull) { ... }
     public BusinessOperation withTraceCount(int traceCount) { ... }
@@ -1104,7 +1104,7 @@ stateDiagram-v2
 
 ### 4.12 RetentionPolicy and ConfigRevision
 
-`record RetentionTiers(int fullDataDays, int digestDays)` is implemented: full data is kept at least `MIN_FULL_DATA_DAYS` = 2 days, so yesterday is never deleted before it is digested (`FULL_DATA_DAYS_TOO_SMALL`); `digestDays >= 0`, 0 meaning no digest (`INVALID_DIGEST_DAYS`); `requireFullDataOutlives(mergeWindow)` requires `mergeWindow <= fullDataDays - 1 day`, because traces are linked while their full data still exists (`FULL_DATA_DAYS_BELOW_MERGE_WINDOW`); `fullDataRetention()` gives `fullDataDays` as a duration. There is no default in code: the seed migration writes the configured values (`tc.retention.full-days=7`, `tc.retention.digest-days=90`).
+`record RetentionTiers(int fullDataDays, int digestDays)` is implemented: full data is kept at least `MIN_FULL_DATA_DAYS` = 2 days, so yesterday is never deleted before it is digested (`FULL_DATA_DAYS_TOO_SMALL`); `digestDays >= 0`, 0 meaning no digest (`INVALID_DIGEST_DAYS`); `requireFullDataOutlives(mergeWindow)` requires `mergeWindow <= fullDataDays - 1 day`, because traces are linked while their full data still exists (`FULL_DATA_DAYS_BELOW_MERGE_WINDOW`); `fullDataRetention()` gives `fullDataDays` as a duration. There is no default in code: the seed migration writes the configured values (`tc.retention.full-data-days=7`, `tc.retention.digest-days=90`).
 
 *Planned* (Phase 2, partitions; Phase 3, configuration snapshot): `RetentionPolicy`, `RetentionTier`, `Granularity`, `ConfigRevision`, and `RetentionTiers.digestEnabled()` / `digestDropAge()` when the drop gate needs them.
 
@@ -1158,7 +1158,7 @@ public record ConfigRevision(long value) implements Comparable<ConfigRevision> {
 }
 ```
 
-Baseline policy rows (seeded by `tc-schema-migrator` from `tc.retention.full-days=7` and `tc.retention.digest-days=90`). Before ADR-13 the values were 14 d (`span`, `trace_attribute`, `span_link`), 30 d (`trace_summary`, `trace_enrichment`) and 90 d (`trace_correlation`, `business_operation`); all full-tier tables now share n.
+Baseline policy rows (seeded by `tc-schema-migrator` from `tc.retention.full-data-days=7` and `tc.retention.digest-days=90`). Before ADR-13 the values were 14 d (`span`, `trace_attribute`, `span_link`), 30 d (`trace_summary`, `trace_enrichment`) and 90 d (`trace_correlation`, `business_operation`); all full-tier tables now share n.
 
 | table_name | tier | retention | partition_granularity | precreate |
 |---|---|---|---|---|
@@ -1267,7 +1267,7 @@ public record DigestStep(String stepLabel, TraceId traceId, Instant startTime, d
  * Row of tc.business_operation_digest (PARTITION BY RANGE (op_day), daily, retention n + m; op_day = first_seen::date UTC).
  * Only ROOT operations are digested (merged_into IS NULL); their id is the full-tier operation id, so links survive.
  */
-public record BusinessOperationDigest(LocalDate opDay, UUID operationId, int operationDefinitionId, String displayValue,
+public record BusinessOperationDigest(LocalDate opDay, UUID operationId, UUID operationDefinitionId, String displayValue,
                                       Instant firstSeen, Instant lastSeen, int traceCount,
                                       OperationOutcome outcome, String outcomeDetail, List<DigestStep> steps,
                                       Map<String, List<String>> attributes, Instant compactedAt) {
@@ -1284,7 +1284,7 @@ public record BusinessOperationDigest(LocalDate opDay, UUID operationId, int ope
 
 **Step label of a member trace.** A trace linked by several keys (T2 is linked by `idp.auth_session_id` and `oauth.authorization_code`) gets the label of the key declared **last** in the business operation definition (keys are declared in business order), so T2's step is `token-exchange`. The outcome rule still sees all labels of a trace (`MemberTrace.stepLabels`).
 
-**Built-ins vs retained keys.** Root service, root span name, duration, span/error counts, `service_ids` and `business_operation_id` are always columns. Only keys flagged `retain_in_digest` go into `attributes`. Keys not flagged are lost after n days; this trade-off is stated in ADR-13 (02).
+**Built-ins vs retained keys.** Root service, root span name, duration, span/error counts, `service_ids` and `business_operation_id` are always columns. Only keys flagged `retained_in_digest` go into `attributes`. Keys not flagged are lost after n days; this trade-off is stated in ADR-13 (02).
 
 #### 4.14.3 CompactionExclusion and DigestProgress
 
@@ -1390,7 +1390,7 @@ classDiagram
     class BusinessOperationDigest {
         +LocalDate opDay
         +UUID operationId
-        +int operationDefinitionId
+        +UUID operationDefinitionId
         +String displayValue
         +Instant firstSeen
         +Instant lastSeen
@@ -1497,8 +1497,8 @@ record FragmentDeadLettered(Instant occurredAt, String reason, int partition, lo
 record SpansDropped(Instant occurredAt, String reason, int count) implements DomainEvent {}       // EXPIRED, TRACE_TOO_LARGE
 record EnrichmentApplied(Instant occurredAt, long sourceId, int revision, String traceIdHex, List<String> keys) implements DomainEvent {}
 record EnrichmentEventRejected(Instant occurredAt, long sourceId, String reason, boolean deadLettered) implements DomainEvent {}
-record CorrelationObserved(Instant occurredAt, int operationDefinitionId, int keyId, String traceIdHex, short origin) implements DomainEvent {}
-record BusinessOperationCreated(Instant occurredAt, UUID operationId, int operationDefinitionId, boolean provisional) implements DomainEvent {}
+record CorrelationObserved(Instant occurredAt, UUID operationDefinitionId, UUID keyId, String traceIdHex, short origin) implements DomainEvent {}
+record BusinessOperationCreated(Instant occurredAt, UUID operationId, UUID operationDefinitionId, boolean provisional) implements DomainEvent {}
 record TraceJoinedBusinessOperation(Instant occurredAt, UUID operationId, String traceIdHex) implements DomainEvent {}
 record BusinessOperationMerged(Instant occurredAt, UUID survivorId, List<UUID> mergedIds, int traceCount) implements DomainEvent {}
 record EnrichmentSourceActivated(Instant occurredAt, long sourceId, int revision, String actor) implements DomainEvent {}
@@ -1602,7 +1602,7 @@ Written by `DigestCompactor` (§4.14). Wire fields reach the digest only through
 | `trace_digest.trace_day`, `trace_id`, `start_time`, `duration_ns`, `root_service_id`, `root_name_id`, `span_count`, `error_count`, `service_ids` | `trace_summary` (same columns) | Copied 1:1 per `(trace_id, trace_day)` row of chunk `[h, h + 1 h)` of day D. |
 | `trace_digest.outcome` | `trace_summary.error_count` | 1 = OK (`error_count = 0`), 2 = ERROR. |
 | `trace_digest.business_operation_id` | `trace_correlation` → `correlation_value` → `business_operation` (following `merged_into` to the root) | NULL if the trace belongs to no operation. If it belongs to several types, the operation of the lowest `operation_definition_id` is stored (the others still list the trace in their `steps`). |
-| `trace_digest.attributes` | `trace_attribute` rows of keys with `retain_in_digest = true`, `ts` in `[D − 1 h, D + 1 day + 6 h)` | `jsonb_object_agg(key, array of DISTINCT transformed value_str)`; transform per `digest_transform`. `'{}'` if none. |
+| `trace_digest.attributes` | `trace_attribute` rows of keys with `retained_in_digest = true`, `ts` in `[D − 1 h, D + 1 day + 6 h)` | `jsonb_object_agg(key, array of DISTINCT transformed value_str)`; transform per `digest_transform`. `'{}'` if none. |
 | (filter) | `compaction_exclusion` vs root service / root name | Excluded unless `business_operation_id IS NOT NULL`. |
 | `trace_digest.compacted_at` | `now()` | — |
 | `business_operation_digest.operation_id`, `operation_definition_id`, `display_value`, `first_seen`, `last_seen`, `trace_count` | `business_operation` (root) | `op_day = first_seen::date` (UTC). |

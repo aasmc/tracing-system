@@ -1,0 +1,3 @@
+spring:
+  liquibase:
+    enabled: false   # the schema is built once per test run by LiquibaseMigrations, as in production by the migrator

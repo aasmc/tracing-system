@@ -16,13 +16,16 @@
         <dependency>
             <groupId>ru.aasmc</groupId>
             <artifactId>tc-persistence</artifactId>
-        </dependency>        <dependency>
+        </dependency>
+        <dependency>
             <groupId>ru.aasmc</groupId>
             <artifactId>tc-schema-changelog</artifactId>
-        </dependency>        <dependency>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-liquibase</artifactId>
-        </dependency>        <dependency>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>

@@ -7,6 +7,7 @@ import static ru.aasmc.tracing.collector.testmodel.domain.Violations.assertViola
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.DisplayName;
@@ -150,11 +151,12 @@ class CorrelationLimitsTest {
 
     private static BusinessOperationDefinition type(
             String name, Duration mergeWindow, List<CorrelationKey> keys, OutcomeRule outcomeRule) {
-        return new BusinessOperationDefinition(1, name, mergeWindow, keys, outcomeRule);
+        return new BusinessOperationDefinition(UUID.randomUUID(), name, mergeWindow, keys, outcomeRule);
     }
 
     private static CorrelationKey primaryKey(String stepLabel) {
-        return new CorrelationKey(1, new AttributeKey("idp.auth_session_id"), KeyRole.PRIMARY, stepLabel);
+        return new CorrelationKey(
+                UUID.randomUUID(), new AttributeKey("idp.auth_session_id"), KeyRole.PRIMARY, stepLabel);
     }
 
     /** {@code count} distinct values of {@code length} characters each. */
@@ -165,7 +167,7 @@ class CorrelationLimitsTest {
     }
 
     private static CorrelationObservation observationOf(String value) {
-        return IdpScenario.observation(IdpScenario.T1, IdpScenario.T1_OBSERVED, 1, value);
+        return IdpScenario.observation(IdpScenario.T1, IdpScenario.T1_OBSERVED, IdpScenario.SESSION_KEY_ID, value);
     }
 
     @Test

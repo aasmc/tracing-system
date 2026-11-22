@@ -1,8 +1,7 @@
-# Master changelog of schema tc (04 §4.0). Changesets are added in Phase 2 (09 §3):
-#   changes/001-control-plane-and-dictionaries.sql
-#   changes/002-partitioned-data-tables.sql
-#   changes/003-seed.sql
-#   changes/004-grants.sql            (runOnChange:true)
-#   changes/005-two-tier-retention.sql
-# Until then the changelog is empty; Liquibase still creates its tracking tables in schema tc.
-databaseChangeLog: []
+# Schema tc. Applied changesets must never change (Liquibase checks their checksums); a fix is a new changeset.
+# Only 004-grants.sql runs again when it changes.
+databaseChangeLog:
+  - include: { file: changes/001-control-plane-and-dictionaries.sql, relativeToChangelogFile: true }
+  - include: { file: changes/002-partitioned-data-tables.sql, relativeToChangelogFile: true }
+  - include: { file: changes/003-seed.sql, relativeToChangelogFile: true }
+  - include: { file: changes/004-grants.sql, relativeToChangelogFile: true }

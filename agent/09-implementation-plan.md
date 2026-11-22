@@ -198,7 +198,7 @@ Reference: 05-domain-model.md (§3–§7), 03 §9.1, ADR-13 types.
 - [x] **1b-3** **Object Mother `IdpScenario`** (the worked example of 06): services `idp-gateway`, `idp-auth-service`, `idp-otp-service`, `idp-token-service`; traces T1 (first factor, `user_id=u-42`, `client_id=bookstore-web`, `auth.factor=PASSWORD`, `idp.auth_session_id=as-777`), T2 (second factor, `auth.factor=SMS`, same session, `oauth.authorization_code=code-abc`), T3 (token exchange, `oauth.authorization_code=code-abc`); business operation definition `idp.login` (PRIMARY `idp.auth_session_id`, ALIAS `oauth.authorization_code`, step labels `first-factor`, `second-factor`, `token-exchange`, outcome rule with `finalStepLabel = token-exchange`); enrichment source `sms-gateway.delivery-reports`.
 - [x] **1b-4** **Attribute matrix**: all eight OTel attribute types, LONG > 2^53, negative zero, NaN/Infinity doubles, empty arrays, unicode, `\u0000`, 4 KiB + 1 strings.
 - [x] **1b-5** **W3C trace-context vectors**: valid, version `ff`, unknown future version with extra fields, all-zero trace id / span id, uppercase hex, wrong lengths, flags variations.
-- [x] **1b-6** **Time edge cases**: midnight-crossing traces, spans in the future, spans older than `fullDays`, nanosecond truncation cases.
+- [x] **1b-6** **Time edge cases**: midnight-crossing traces, spans in the future, spans older than `fullDataDays`, nanosecond truncation cases.
 - [x] **1b-7** **Union-find orderings** for the IdP scenario: T1→T2→T3, T3→T2→T1, T2→T3→T1, plus a merge outside the merge window and an oversized merge.
 - [x] **1b-8** ~~Custom AssertJ assertions: `TraceSummaryAssert`, `TransitionAssert`, `OutcomeAssert`.~~ Replaced by plain AssertJ on records plus one helper `Violations.assertViolation(code, call)` (§2.6).
 
@@ -215,7 +215,7 @@ Reference: 05-domain-model.md (§3–§7), 03 §9.1, ADR-13 types.
 | D-07 | `EnrichmentSourceDefinitionTest` | Invariants: unique target keys, reserved prefixes rejected, JSON Pointer syntax, transform arguments (RE2/J compiles) | UC-04 |
 | D-08 | `EnrichmentSourceTest` | Every allowed transition succeeds and every forbidden one returns the expected violation; name and topic rules | UC-05 |
 | D-09 | `IndexedAttributeTest` | Status transitions; `retainInDigest` requires the key to be indexed; `DISABLED` with `retainInDigest` is a violation | UC-07, UC-23 |
-| D-10 | `RetentionTiersTest` | R1–R3 boundaries (`fullDays` 1 / 2, `digestDays` −1 / 0, `fullDays` vs merge window) | UC-23 |
+| D-10 | `RetentionTiersTest` | R1–R3 boundaries (`fullDataDays` 1 / 2, `digestDays` −1 / 0, `fullDataDays` vs merge window) | UC-23 |
 | D-11 | `OperationLinkerTest`, `OperationMergePolicyTest` | Specification by use case (nested groups, Given/When/Then display names, exact `LinkingResult` per run): creating (naming, provisional, chains, independent groups, duplicates), extending (widening, new values, naming once, earlier observations of the same trace), merge window (inclusive bounds both ways, reuse), merging (survivor rules, three-way, order independence), size limit (at limit, refused, per merge; growth of one operation not limited), trace counting (shared trace counted twice), idempotence and statelessness, input rules, and all IdP arrival orders across runs | UC-09, UC-10 |
 | D-12 | `OutcomeRuleTest` | Rule order 1–4 with one test per branch (SUCCESS via outcome key, FAILED via failure value, UNKNOWN for other values, FAILED via error, SUCCESS / INCOMPLETE via final step, SUCCESS without rule) | UC-21 |
 | D-13 | `DigestTransformTest` | `SHA256` output equals published SHA-256 test vectors (lowercase hex, UTF-8) for the attribute matrix; `MASK` output (PostgreSQL equality in P-23) | UC-21, UC-22 |
@@ -298,12 +298,12 @@ The data layer is everything that talks to PostgreSQL or is a raw infrastructure
 ### 3.1 Step a — Design interfaces and their API
 
 **Schema (`tc-schema-migrator`)**
-- [ ] **2a-1** Liquibase changelogs exactly as 04 §4.0–§4.7: master `db.changelog-master.yaml` including formatted-SQL files `001-control-plane-and-dictionaries.sql` (incl. `tc.try_float8(text)`), `002-partitioned-data-tables.sql`, `003-seed.sql`, `004-grants.sql` (`runOnChange:true`), `005-two-tier-retention.sql` (incl. `tc.operation_root(uuid)`). Changeset ids `tc:NNN-MM-<name>`; `splitStatements:false` for function bodies; changelog parameters `${fullDays}`, `${digestDays}` via `spring.liquibase.parameters.*`; schema `tc` pre-created as in production (IaC), tracking tables in `tc`.
-- [ ] **2a-2** Database roles and grants (04 §13): `tc_owner`, `tc_migrator`, `tc_ingester`, `tc_enricher`, `tc_query`, `tc_admin`, `tc_maintenance`. Each service's test context connects with **its** role (a second `@ServiceConnection`-derived `DataSource` per role is configured by `tc-test-infra`).
+- [x] **2a-1** Liquibase changelogs as 04 §4.0–§4.7: master `db.changelog-master.yaml` including formatted-SQL files `001-control-plane-and-dictionaries.sql` (incl. `tc.try_float8(text)`), `002-partitioned-data-tables.sql` (incl. `tc.operation_root(uuid)`), `003-seed.sql`, `004-grants.sql` (`runOnChange:true`); the former `005-two-tier-retention.sql` is folded into these (§3.6). Changeset ids `tc:NNN-MM-<name>`; `splitStatements:false` for function bodies; changelog parameters `${fullDataDays}`, `${digestDays}` via `spring.liquibase.parameters.*`; schema `tc` pre-created as in production (IaC), tracking tables in `tc`.
+- [x] **2a-2** Database roles and grants (04 §13): `tc_owner`, `tc_migrator`, `tc_ingester`, `tc_enricher`, `tc_query`, `tc_admin`, `tc_maintenance`. Each service's test context connects with **its** role (a second `@ServiceConnection`-derived `DataSource` per role is configured by `tc-test-infra`). *Grants done (P-02); the per-role `DataSource` of each service is added with that service's first repository.*
 
-**Repositories (`tc-persistence`, interfaces in `…persistence.*`, all `JdbcClient`-based)**
+**Repositories (`tc-persistence`, interfaces in `…persistence.*`, all `NamedParameterJdbcTemplate`-based, which also batches rows)**
 - [ ] **2a-3** Configuration: `KafkaConnectionRepository`, `EnrichmentSourceRepository` (+ `SourceRevisionRepository`), `AttributeKeyRepository`, `IndexedAttributeRepository`, `BusinessOperationDefinitionRepository` (+ keys, outcome rule), `RetentionPolicyRepository` (+ tiers), `CompactionExclusionRepository`, `ConfigRevisionRepository` (`bump()` in the caller's transaction), `ConfigSnapshotLoader` (one consistent snapshot).
-- [ ] **2a-4** Dictionaries and resources: `DictionaryRepository` (`service`, `span_name` with cardinality guard, `attribute_key` — insert-if-absent with `ON CONFLICT DO NOTHING RETURNING` + reselect), `ResourceRepository`, `InstrumentationScopeRepository`.
+- [ ] **2a-4** Dictionaries and resources: `DictionaryRepository` (`service`, `span_name` with cardinality guard, `attribute_key` — insert-if-absent with `ON CONFLICT DO NOTHING RETURNING` + reselect), `ResourceRepository`, `InstrumentationScopeRepository`. *`DictionaryRepository` done (§3.6); `ResourceRepository` and `InstrumentationScopeRepository` move to slice 2d-4, which adds the jsonb attribute encoding they share with spans.*
 - [ ] **2a-5** Partitions: `PartitionDdl` (create, attach, `DETACH … CONCURRENTLY`, `FINALIZE`, drop, naming `span_p2026112114`), `PartitionCatalog` (list partitions and bounds via `pg_inherits` / `pg_get_expr`).
 - [ ] **2a-6** Read side (used by `tc-query-api`, against the replica role `tc_query`): `TraceReadRepository` (summary probe over daily partitions, spans by time window, enrichments, links, correlations, digest fallback), `SearchRepository` (single/multi-predicate SQL from a `SearchPlan`, numeric ranges, keyset pagination, DIGEST-tier containment query, brute-force jsonb scan with `statement_timeout`), `CatalogRepository` (services, span names, keys, values), `BusinessOperationReadRepository` (both tiers), `RelatedTraceRepository`.
 - [ ] **2a-7** Maintenance SQL: `CorrelationResolverRepository` (watermark with gap grace, loading the linking input, writing the linking result), `BackfillRepository` (hourly chunk with `backfill_cursor`), `CompactionRepository` (chunk `INSERT … SELECT` into `trace_digest`, business-operation digest, `compaction_state` progress), `RetentionGateRepository` (drop-gate query), `DictionaryGcRepository`.
@@ -318,12 +318,12 @@ The data layer is everything that talks to PostgreSQL or is a raw infrastructure
 ### 3.2 Step b — Data test model (`tc-persistence` test-jar, `…testmodel.db` and `…testmodel.kafka`)
 
 - [ ] **2b-1** `@PersistenceIT` meta-annotation and a `PersistenceTestApplication` (test sources) wiring the repositories, the Liquibase-migrated schema and the role-specific `DataSource`s.
-- [ ] **2b-2** `DbSeed`: fluent seeding of configuration rows (connections, sources with revisions, indexed attributes incl. `retain_in_digest`, business operation definitions with keys and outcome rules, exclusions, tiers).
+- [ ] **2b-2** `DbSeed`: fluent seeding of configuration rows (connections, sources with revisions, indexed attributes incl. `retained_in_digest`, business operation definitions with keys and outcome rules, exclusions, tiers).
 - [ ] **2b-3** **Datasets** written through the production write components once they exist (never through hand-written INSERTs, except for the write components' own tests):
   - `IdpDataset` — T1–T3 spans, summaries, attributes, correlations, enrichment for T2;
   - `MidnightDataset` — traces crossing midnight and fragments arriving after midnight;
   - `VolumeDataset` — N traces × M spans generator for plan and pagination tests (default 50 000 spans);
-  - `DigestDataset` — FULL-tier data older than `fullDays` ready for compaction, plus pre-compacted digest rows for query tests.
+  - `DigestDataset` — FULL-tier data older than `fullDataDays` ready for compaction, plus pre-compacted digest rows for query tests.
 - [ ] **2b-4** `TestPartitions` switched to the production `PartitionDdl`.
 - [ ] **2b-5** `PlanAssertions` over `EXPLAIN (FORMAT JSON)`: `prunedTo(partitions)`, `usesIndex(name)`, `noSeqScanOn(table)`.
 - [ ] **2b-6** `SqlStateFaults`: provoke real SQL errors (missing partition, check violation, `statement_timeout`, connection kill via `pg_terminate_backend`).
@@ -333,10 +333,10 @@ The data layer is everything that talks to PostgreSQL or is a raw infrastructure
 
 | Id | Module / test class | What it proves | UC / doc |
 |---|---|---|---|
-| P-01 | migrator `MigrationsIT` | Changelogs 001–005 apply on an empty PG 18.7 (schema `tc` pre-created as by IaC); second run is a no-op; every object and the tracking tables are owned by `tc_owner`; modifying an applied changeset fails checksum validation; `SchemaVersionGuard` accepts/refuses by required changeset id; `information_schema` matches 04 (golden column list); no DEFAULT partitions exist | 04 §4 |
+| P-01 | migrator `MigrationsIT` | Changelogs 001–004 apply on an empty PG 18.7 (schema `tc` pre-created as by IaC); second run is a no-op; every object and the tracking tables are owned by `tc_owner`; modifying an applied changeset fails checksum validation; `information_schema` matches 04 (golden column list); no DEFAULT partitions exist | 04 §4 |
 | P-02 | migrator `RolesAndGrantsIT` | Each role can do exactly what 04 §13 allows (e.g. `tc_query` cannot `INSERT`; `tc_ingester` cannot `DROP`) | UC-19 |
 | P-03 | persistence `ConfigRepositoriesIT` | CRUD + revisions; `config_revision` bumped in the same transaction (rollback leaves it unchanged); snapshot consistency under concurrent bump | UC-04, UC-05 |
-| P-04 | persistence `DictionaryRepositoryIT` | Insert-if-absent under 8 concurrent threads returns one id; span-name cardinality guard (5 000) → overflow | UC-01 |
+| P-04 | persistence `DictionaryRepositoryIT` | Insert-if-absent under 8 concurrent threads returns one id; span-name limit per service (configured) → names beyond it get no id; the ingester role's privileges suffice | UC-01 |
 | P-05 | persistence `PartitionDdlIT` | Create hourly/daily/monthly partitions; detach concurrently; finalize after an interrupted detach; drop; naming ↔ bounds cross-check; nonconforming partition never dropped | UC-16 |
 | P-06 | persistence `RetentionGateIT` | Drop gate: FULL partition kept while an overlapping trace_day is not DONE; extended gate for `trace_correlation`/`correlation_value` (max merge window + 1 day); DIGEST partitions dropped at n + m | UC-16, UC-21 |
 | P-07 | ingester `SpanBatchWriterIT` | Writable CTE: first write inserts all; replay of the same fragment inserts nothing and leaves `span_count`/`error_count` unchanged; partial duplicates count only new spans; side tables joined to the inserted set only | UC-01, UC-02 |
@@ -361,7 +361,7 @@ The data layer is everything that talks to PostgreSQL or is a raw infrastructure
 
 ### 3.4 Step d — Data implementation
 
-- [ ] **2d-1** Liquibase changelogs 001–005 and roles (P-01, P-02).
+- [x] **2d-1** Liquibase changelogs 001–004 and grants (P-01, P-02).
 - [ ] **2d-2** Configuration, dictionary, resource repositories (P-03, P-04).
 - [ ] **2d-3** `PartitionDdl`, `PartitionCatalog`, `RetentionGateRepository` (P-05, P-06).
 - [ ] **2d-4** `SpanBatchWriter`, `CopyTextEncoder`, `SqlStateClassifier`, `TraceDayLookup` (P-07…P-09).
@@ -370,6 +370,23 @@ The data layer is everything that talks to PostgreSQL or is a raw infrastructure
 - [ ] **2d-7** Maintenance repositories (P-16…P-18).
 - [ ] **2d-8** Kafka and secret infrastructure (P-19…P-22).
 - [ ] **2d-9** Encoding cross-checks against PostgreSQL (P-23).
+
+### 3.6 Phase-2 results
+
+**Order of work (2026-11-22).** Phase 2 is built in vertical slices in the order of step d (2d-1, 2d-2, …): each slice designs its interfaces, writes its tests and implements them before the next slice starts. Designing all ten 2a items up front would repeat Phase 1a, whose first draft had to be cut from 113 to 64 files, and every repository needs the schema first.
+
+**Slice 2d-1: schema and grants (2026-11-22).** `tc-schema-changelog` holds `001-control-plane-and-dictionaries.sql`, `002-partitioned-data-tables.sql`, `003-seed.sql` and `004-grants.sql` (`runOnChange:true`). Tests in `tc-schema-migrator`: `MigrationsIT` (P-01, 13 tests: changesets applied in order, a second run changes nothing, everything owned by `tc_owner`, an edited applied changeset fails checksum validation, golden column list `golden/tc-columns.txt`, range partition keys and no DEFAULT partition, `STORAGE MAIN`/lz4 on `span`, the seed, the JSON checks, `tc.try_float8`, `tc.operation_root`) and `RolesAndGrantsIT` (P-02, 7 tests: the full table-privilege list per role, column privileges, default privileges for later tables, and statements run while logged in as the role). `JdbcProbe.loggedInAs(role)` gives tests a connection as any bootstrap role. Full `mvn verify` green. Deviations, recorded in 04 §4 and §13.2:
+- changelog 005 is folded into 001–004 (nothing was deployed): each table is created once, retention is seeded once from `${fullDataDays}`/`${digestDays}`, all grants are in 004;
+- names: column `retained_in_digest` (like the domain's `retainedInDigest`), changelog parameter `fullDataDays`, property `tc.retention.full-data-days`;
+- no `?` in changelog SQL: PgJDBC reads it as a bind parameter, so the jsonb key checks use `->` and `-` instead of `?` and `?|`;
+- `retention_policy` checks `retention >= 2 days` (the correctness floor of full data) and `precreate >= 1 hour`, without the former 31-day upper bound (a limit, not a rule);
+- `GRANT TEMPORARY ON DATABASE` moved to infrastructure-as-code: only the database owner can grant it, and `PUBLIC` has it by default;
+- the Phase-0 `LiquibaseSpikeIT` and its throw-away changelog are removed: the real changelogs and P-01/P-02 now cover ownership, `$$` functions, parameters and grants. `runInTransaction:false` (`CREATE INDEX CONCURRENTLY`) is tested again with the first changeset that needs it;
+- ids of the configuration tables (`kafka_connection`, `enrichment_source`, `business_operation_definition`, `correlation_key`, `compaction_exclusion`) are UUIDv7 (`DEFAULT uuidv7()`), and so are the domain types (`KafkaConnectionId`, `EnrichmentSourceId`, `CorrelationKey.id`, `BusinessOperationDefinition.id`, the definition and key ids of `CorrelationObservation` and `BusinessOperation`); dictionaries, write-order positions, content hashes and wire ids stay integers because of their size in the largest tables (04 §5.1, "Surrogate ids"). `MigrationsIT` checks the defaults;
+- the initial compaction exclusions are a changelog parameter (`tc.compaction.initial-exclusions`, comma-separated root-name patterns, empty by default) instead of a fixed `GET /actuator/%`, which assumed the clients' span names and actuator path. Liquibase checksums include substituted parameters, so a parameter changed after installation failed every later migration; the two parameterized seeds now carry `validCheckSum: ANY`, and the migrator context (other exclusions than the test schema) proves it starts. `MigrationsIT` has 13 tests;
+- `SchemaVersionGuard` moves to the slice that adds the services' readiness checks, because nothing calls it before; those roles then also need `SELECT` on `tc.databasechangelog`.
+
+**Slice 2d-2a: dictionaries (2026-11-22).** `tc-persistence` got its test context: `@PersistenceIT` and `PersistenceTestApplication` (test sources; Boot's JDBC auto-configuration plus the repository beans). `DictionaryRepository` (`persistence.dictionary`) resolves service names, span names per service and attribute keys to ids, inserting new ones: read existing values, insert the rest in sorted order with `ON CONFLICT DO NOTHING RETURNING`, read again those a concurrent caller inserted. The span-name limit is a parameter and is enforced in the insert statement (deviation in 03 §2.9: no `countByService` cache). `DictionaryRepositoryIT` (P-04, 8 tests): ids stable and stored once, 8 concurrent callers get the same ids, the per-service span-name limit, first-seen key types, and the `tc_ingester` role's privileges. Not yet: changing `attribute_key.value_type` to `MIXED` when a key is seen with another type (04 §5.3); it comes with the ingester's attribute indexing, which knows the types.
 
 ### 3.5 Step e — Data gate
 
@@ -669,7 +686,7 @@ The Java rules T1–T12 do not apply to the TypeScript code. The same spirit doe
 - [x] 1e Gate passed — §2.6 "Domain gate"
 
 **Phase 2 — Data**
-- [ ] 2a Migrations, repository interfaces and infrastructure APIs designed (2a-1…2a-10)
+- [ ] 2a Migrations, repository interfaces and infrastructure APIs designed (2a-1…2a-10; 2a-1, 2a-2 done)
 - [ ] 2b Data test model ready (2b-1…2b-7)
 - [ ] 2c Tests P-01…P-23 red
 - [ ] 2d Implementation green (2d-1…2d-8)

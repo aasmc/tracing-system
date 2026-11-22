@@ -672,7 +672,7 @@ POST /api/v1/admin/indexed-attributes
 
    `retainInDigest` (default `false`) and `digestTransform` (`NONE`, `SHA256` or `MASK`, default `NONE`) are optional (ADR-13). They control whether the key's values are copied into `trace_digest.attributes` when its trace day is compacted (UC-21).
 
-2. `tc-control-plane` upserts `attribute_key('auth.factor', 'STRING')` and inserts `indexed_attribute(key_id, origin_scope='SPAN', numeric=false, status='BACKFILLING', indexed_since=now(), retain_in_digest=true, digest_transform='NONE', created_by)`. It bumps `config_revision` and returns `201 {"key":"auth.factor","status":"BACKFILLING","indexedSince":"2026-11-21T10:00:00Z","retainInDigest":true,"digestTransform":"NONE"}`.
+2. `tc-control-plane` upserts `attribute_key('auth.factor', 'STRING')` and inserts `indexed_attribute(key_id, origin_scope='SPAN', numeric=false, status='BACKFILLING', indexed_since=now(), retained_in_digest=true, digest_transform='NONE', created_by)`. It bumps `config_revision` and returns `201 {"key":"auth.factor","status":"BACKFILLING","indexedSince":"2026-11-21T10:00:00Z","retainInDigest":true,"digestTransform":"NONE"}`.
 3. Within ≤ 10 s, `ConfigSnapshotPoller` in every `tc-ingester` and `EnrichmentSourceRegistry` in every `tc-enricher` reload the snapshot. From now on new spans with `auth.factor` produce `trace_attribute` rows.
 4. `AttributeBackfill` in `tc-maintenance` (ShedLock lock `attribute-backfill`, runs every minute) picks up keys in BACKFILLING. For each hourly `span` partition from `indexed_since + 30 s` backwards to `indexed_since - backfillWindow` (newest first, so recent searches benefit first) it does the following:
    - reads from the **read replica**: `SELECT trace_id, start_time, attributes->'auth.factor' FROM tc.span_pYYYYMMDDHH WHERE attributes ? 'auth.factor'`, a sequential scan of one partition;
@@ -694,7 +694,7 @@ POST /api/v1/admin/indexed-attributes
 - **Cardinality guard.** If more than 5 M distinct values per day are observed for the key (sampled by the ingester), a warning is shown. Indexing user-unique ids is fine; indexing request ids at 1 000/s would create 86 M rows/day.
 - **1e. Retain an already indexed key.** `PATCH /indexed-attributes/{keyId}` with `{"retainInDigest":true,"digestTransform":"SHA256"}` (UC-23). No backfill is needed: compaction reads `trace_attribute`, which already holds the key. Takes effect for trace days not yet DONE (not retroactive).
 - **1f. PERSONAL key retained with `NONE`.** Refused with `400 PERSONAL_DATA_RETAINED_IN_CLEAR` unless the request sets `acknowledgePii = true` ("the raw value is kept n + m days; consider SHA256"). A SECRET key retained with `NONE` is always refused with `400 SECRET_RETAINED_IN_CLEAR` (05 §7.3).
-- **4c. Disable a retained key.** `DISABLED` also clears `retain_in_digest` (05 §4.9): without `trace_attribute` rows there is nothing to copy. Digest rows already written keep the key until their partition is dropped.
+- **4c. Disable a retained key.** `DISABLED` also clears `retained_in_digest` (05 §4.9): without `trace_attribute` rows there is nothing to copy. Digest rows already written keep the key until their partition is dropped.
 
 **Postconditions**
 
@@ -782,7 +782,7 @@ HTTP/1.1 201 Created
 - **2a. No PRIMARY key.** `400 PRIMARY_KEY_REQUIRED`.
 - **2b. Key already used in this type.** `400 DUPLICATE_KEY`.
 - **2c. `finalStepLabel` matches no key's step label.** `400 UNKNOWN_STEP_LABEL`.
-- **2d. `outcomeKey` is not indexed.** `400 OUTCOME_KEY_NOT_INDEXED`, with the hint to index it first (UC-07). The outcome is read from `trace_attribute` at compaction, never from spans. When the rule is saved, the control plane also flags `outcomeKey` as `retain_in_digest` (transform `NONE`) if it is not retained yet, because operation outcomes are evaluated from `trace_digest.attributes` (04 §6).
+- **2d. `outcomeKey` is not indexed.** `400 OUTCOME_KEY_NOT_INDEXED`, with the hint to index it first (UC-07). The outcome is read from `trace_attribute` at compaction, never from spans. When the rule is saved, the control plane also flags `outcomeKey` as `retained_in_digest` (transform `NONE`) if it is not retained yet, because operation outcomes are evaluated from `trace_digest.attributes` (04 §6).
 - **2e. Outcome rule changed later** (`PUT /business-operation-definitions/1` with a new `outcomeRule`, UC-23). Applies to operations compacted after the change; existing `business_operation_digest` rows keep their outcome (not retroactive).
 - **Update.**
   - `PUT /business-operation-definitions/1` can add or remove keys and change step labels and the window.
@@ -1631,7 +1631,7 @@ WITH chunk AS (
                    WHEN 'MASK'   THEN left(ta.value_str, 2) || '***'
                    ELSE ta.value_str END) AS vals
         FROM tc.trace_attribute ta
-        JOIN tc.indexed_attribute ia ON ia.key_id = ta.key_id AND ia.retain_in_digest
+        JOIN tc.indexed_attribute ia ON ia.key_id = ta.key_id AND ia.retained_in_digest
         JOIN tc.attribute_key ak ON ak.id = ta.key_id
         WHERE ta.key_id = ANY(:retainedKeyIds)
           AND ta.ts >= :d - interval '1 hour' AND ta.ts < :d + interval '30 hours'
@@ -1981,7 +1981,7 @@ PATCH /api/v1/admin/indexed-attributes/7
 { "retainInDigest": true, "digestTransform": "SHA256" }
 ```
 
-   `user_id` is PERSONAL, and `SHA256` keeps it searchable by `EQ` without storing the raw value for 97 days. `tc-control-plane` updates `indexed_attribute` (`retain_in_digest = true`, `digest_transform = 'SHA256'`), bumps `config_revision` and returns `200 {"key":"user_id","status":"ACTIVE","retainInDigest":true,"digestTransform":"SHA256"}`. `client_id`, `auth.factor` and `sms.delivery.status` are flagged the same way with `NONE`.
+   `user_id` is PERSONAL, and `SHA256` keeps it searchable by `EQ` without storing the raw value for 97 days. `tc-control-plane` updates `indexed_attribute` (`retained_in_digest = true`, `digest_transform = 'SHA256'`), bumps `config_revision` and returns `200 {"key":"user_id","status":"ACTIVE","retainInDigest":true,"digestTransform":"SHA256"}`. `client_id`, `auth.factor` and `sms.delivery.status` are flagged the same way with `NONE`.
 4. `idp.auth_session_id` is not indexed yet. Toggling "Retain in digest" on it sends:
 
 ```http
@@ -2064,7 +2064,7 @@ POST /api/v1/admin/compaction-exclusions
 | **NFR-DUR** At-least-once with effectively-once effect | UC-02, UC-03, UC-17, UC-18 | `tc-ingester`, `tc-enricher` | all data tables (idempotent writes); `otlp-traces` as WAL |
 | **NFR-QRY** Query latency | UC-11, UC-12, UC-13, UC-14, UC-15, UC-22 | `tc-query-api`, PG replica | `trace_summary`, `trace_attribute`, `span`, `trace_digest`, `business_operation_digest` |
 | **NFR-RET** Bounded storage and retention (two tiers, ADR-13) | UC-16, UC-21, UC-23 | `tc-maintenance` PartitionManager (drop gate), DigestCompactor, DictionaryGc, StatsRefresher; `tc-control-plane` | `retention_policy`, all partitioned tables, `correlation_value`, `resource`, `trace_digest`, `business_operation_digest`, `compaction_state`, `compaction_exclusion` |
-| **FR-21 / FR-22 / FR-23** Business history after span detail expires: operation, outcome, retained custom attributes for n + m days (ADR-13) | UC-07, UC-08, UC-21, UC-22, UC-23 | `tc-control-plane`; `tc-maintenance` DigestCompactor; `tc-query-api` | `indexed_attribute` (`retain_in_digest`, `digest_transform`), `business_operation_definition.outcome_rule`, `trace_digest`, `business_operation_digest`, `compaction_state`, `compaction_exclusion` |
+| **FR-21 / FR-22 / FR-23** Business history after span detail expires: operation, outcome, retained custom attributes for n + m days (ADR-13) | UC-07, UC-08, UC-21, UC-22, UC-23 | `tc-control-plane`; `tc-maintenance` DigestCompactor; `tc-query-api` | `indexed_attribute` (`retained_in_digest`, `digest_transform`), `business_operation_definition.outcome_rule`, `trace_digest`, `business_operation_digest`, `compaction_state`, `compaction_exclusion` |
 | **NFR-SEC** Authentication, authorisation, PII | UC-19, UC-04 (secrets), UC-14, UC-22, UC-23 (digest transforms) | `tc-ui`, gateway, `tc-query-api`, `tc-control-plane`, `tc-enricher` SecretResolver | `kafka_connection` (secret refs only) |
 | **NFR-KAFKA** No dynamic topics, no Kafka Streams | UC-03, UC-04, UC-05, UC-18 | all Kafka clients (`allow.auto.create.topics=false`, `spring.kafka.admin.auto-create=false`, no RetryableTopic) | `otlp-traces`, `otlp-traces.dlq`, `tc-enrichment.dlq` (pre-created) |
 | **NFR-CFG** Runtime reconfiguration ≤ 30 s | UC-05, UC-07, UC-08, UC-23 | `tc-control-plane`, ConfigSnapshotPoller, EnrichmentSourceRegistry | `config_revision` |

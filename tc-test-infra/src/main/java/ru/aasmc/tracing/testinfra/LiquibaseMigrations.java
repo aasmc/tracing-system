@@ -34,8 +34,18 @@ public final class LiquibaseMigrations {
     public static final String CHANGE_LOG = "classpath:db/changelog/db.changelog-master.yaml";
     public static final String SCHEMA = "tc";
     public static final String MIGRATOR_USER = "tc_migrator";
-    /** Changelog parameters; production values come from {@code tc.retention.*}. */
-    public static final Map<String, String> PARAMETERS = Map.of("fullDays", "7", "digestDays", "90");
+    /**
+     * Changelog parameters; production values come from {@code tc.retention.*} and
+     * {@code tc.compaction.initial-exclusions}. The exclusions differ from the migrator's default (none), so tests
+     * see seeded exclusions, including a repeated pattern and blanks that must be dropped.
+     */
+    public static final Map<String, String> PARAMETERS = Map.of(
+            "fullDataDays",
+            "7",
+            "digestDays",
+            "90",
+            "initialCompactionExclusions",
+            "http get /actuator/%, GET /internal/health ,,http get /actuator/%");
 
     private static final String BOOTSTRAP_SCRIPT = "testinfra/iac-bootstrap.sql";
 

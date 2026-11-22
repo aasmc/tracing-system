@@ -349,7 +349,8 @@ class OperationLinkerTest {
                     List.of(observation(TRACE_2, SESSION_KEY_ID, "s-1", windowEnd)), List.of(), Map.of("s-1", login));
 
             assertThat(result.updated())
-                    .containsExactly(new BusinessOperation(storedId(1), at("09:00"), windowEnd, 1, "s-1", 2, null));
+                    .containsExactly(
+                            new BusinessOperation(storedId(1), at("09:00"), windowEnd, IDP_LOGIN.id(), "s-1", 2, null));
         }
 
         @Test
@@ -366,7 +367,8 @@ class OperationLinkerTest {
 
             assertThat(result)
                     .isEqualTo(expected()
-                            .created(new BusinessOperation(newId(1), afterWindow, afterWindow, 1, "s-1", 1, null))
+                            .created(new BusinessOperation(
+                                    newId(1), afterWindow, afterWindow, IDP_LOGIN.id(), "s-1", 1, null))
                             .pointing("s-1", newId(1))
                             .build());
         }
@@ -387,7 +389,8 @@ class OperationLinkerTest {
                     Map.of("s-1", login));
 
             assertThat(atStart.updated())
-                    .containsExactly(new BusinessOperation(storedId(1), windowStart, at("09:00"), 1, "s-1", 2, null));
+                    .containsExactly(new BusinessOperation(
+                            storedId(1), windowStart, at("09:00"), IDP_LOGIN.id(), "s-1", 2, null));
             assertThat(beforeStart.created()).hasSize(1);
             assertThat(beforeStart.updated()).isEmpty();
         }
@@ -516,7 +519,7 @@ class OperationLinkerTest {
                 storedId(3),
                 at("09:00").plus(Duration.ofDays(3)),
                 at("09:00").plus(Duration.ofDays(3)),
-                1,
+                IDP_LOGIN.id(),
                 "s-1",
                 1,
                 null);
@@ -575,7 +578,8 @@ class OperationLinkerTest {
             assertThat(result)
                     .isEqualTo(expected()
                             .created(operation(newId(1), "09:00", "09:00", "s-1", 1))
-                            .created(new BusinessOperation(newId(2), threeDaysLater, threeDaysLater, 1, "s-1", 1, null))
+                            .created(new BusinessOperation(
+                                    newId(2), threeDaysLater, threeDaysLater, IDP_LOGIN.id(), "s-1", 1, null))
                             .pointing("s-1", newId(2))
                             .build());
         }
@@ -598,7 +602,8 @@ class OperationLinkerTest {
 
             assertThat(result)
                     .isEqualTo(expected()
-                            .created(new BusinessOperation(newId(1), threeDaysLater, threeDaysLater, 1, "s-1", 1, null))
+                            .created(new BusinessOperation(
+                                    newId(1), threeDaysLater, threeDaysLater, IDP_LOGIN.id(), "s-1", 1, null))
                             .updated(operation(storedId(1), "09:00", "10:00", "s-1", 2))
                             .pointing("s-1", newId(1))
                             .build());
@@ -875,10 +880,12 @@ class OperationLinkerTest {
         void given_foreignObservation_when_inputBuilt_then_invalidOperationDefinition() {
             assertViolation(
                     ViolationCode.INVALID_OPERATION_DEFINITION,
-                    () -> inputOf(List.of(new CorrelationObservation(at("09:00"), 2, SESSION_KEY_ID, "s-1", TRACE_1))));
+                    () -> inputOf(List.of(new CorrelationObservation(
+                            at("09:00"), UUID.randomUUID(), SESSION_KEY_ID, "s-1", TRACE_1))));
             assertViolation(
                     ViolationCode.INVALID_OPERATION_DEFINITION,
-                    () -> inputOf(List.of(new CorrelationObservation(at("09:00"), 1, 99, "s-1", TRACE_1))));
+                    () -> inputOf(List.of(new CorrelationObservation(
+                            at("09:00"), IDP_LOGIN.id(), UUID.randomUUID(), "s-1", TRACE_1))));
         }
 
         @Test
@@ -891,7 +898,7 @@ class OperationLinkerTest {
             BusinessOperation merged =
                     operation(storedId(1), "09:00", "09:00", "s-1", 1).markMergedInto(storedId(2));
             BusinessOperation otherDefinition =
-                    new BusinessOperation(storedId(3), at("09:00"), at("09:00"), 2, "s-1", 1, null);
+                    new BusinessOperation(storedId(3), at("09:00"), at("09:00"), UUID.randomUUID(), "s-1", 1, null);
             List<CorrelationObservation> observations = List.of(session(TRACE_1, "s-1", "09:00"));
 
             assertViolation(
@@ -1089,7 +1096,7 @@ class OperationLinkerTest {
         return observation(trace, CODE_KEY_ID, value, at(time));
     }
 
-    private static CorrelationObservation observation(TraceId trace, int keyId, String value, Instant time) {
+    private static CorrelationObservation observation(TraceId trace, UUID keyId, String value, Instant time) {
         return new CorrelationObservation(time, IDP_LOGIN.id(), keyId, value, trace);
     }
 

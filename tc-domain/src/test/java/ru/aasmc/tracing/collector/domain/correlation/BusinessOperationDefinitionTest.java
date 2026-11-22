@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -40,11 +41,14 @@ class BusinessOperationDefinitionTest {
     }
 
     @Test
-    @DisplayName("a definition has a primary key, and no key id or attribute twice")
+    @DisplayName("a definition has an id and a primary key, and no key id or attribute twice")
     void given_invalidKeys_when_constructed_then_invalidOperationDefinition() {
-        CorrelationKey sessionAgain =
-                new CorrelationKey(3, SESSION_KEY.key(), KeyRole.ALIAS, IdpScenario.STEP_TOKEN_EXCHANGE);
+        CorrelationKey sessionAgain = new CorrelationKey(
+                UUID.randomUUID(), SESSION_KEY.key(), KeyRole.ALIAS, IdpScenario.STEP_TOKEN_EXCHANGE);
 
+        assertViolation(
+                ViolationCode.INVALID_OPERATION_DEFINITION,
+                () -> new BusinessOperationDefinition(null, "idp.login", WINDOW, List.of(SESSION_KEY), null));
         assertViolation(
                 ViolationCode.INVALID_OPERATION_DEFINITION, () -> definition("idp.login", WINDOW, List.of(), null));
         assertViolation(
@@ -86,31 +90,45 @@ class BusinessOperationDefinitionTest {
 
         assertViolation(
                 ViolationCode.INVALID_OPERATION_DEFINITION,
-                () -> new CorrelationKey(1, attribute, KeyRole.PRIMARY, ""));
+                () -> new CorrelationKey(UUID.randomUUID(), attribute, KeyRole.PRIMARY, ""));
         assertViolation(
                 ViolationCode.INVALID_OPERATION_DEFINITION,
-                () -> new CorrelationKey(1, attribute, KeyRole.PRIMARY, "  "));
+                () -> new CorrelationKey(UUID.randomUUID(), attribute, KeyRole.PRIMARY, "  "));
         assertViolation(
-                ViolationCode.INVALID_OPERATION_DEFINITION, () -> new CorrelationKey(1, null, KeyRole.PRIMARY, null));
-        assertViolation(ViolationCode.INVALID_OPERATION_DEFINITION, () -> new CorrelationKey(1, attribute, null, null));
+                ViolationCode.INVALID_OPERATION_DEFINITION,
+                () -> new CorrelationKey(null, attribute, KeyRole.PRIMARY, null));
+        assertViolation(
+                ViolationCode.INVALID_OPERATION_DEFINITION,
+                () -> new CorrelationKey(UUID.randomUUID(), null, KeyRole.PRIMARY, null));
+        assertViolation(
+                ViolationCode.INVALID_OPERATION_DEFINITION,
+                () -> new CorrelationKey(UUID.randomUUID(), attribute, null, null));
     }
 
     @Test
-    @DisplayName("an observation has a time, a trace and a non-blank value")
+    @DisplayName("an observation has a time, a definition, a key, a trace and a non-blank value")
     void given_invalidObservation_when_constructed_then_invalidCorrelationValue() {
         Instant seen = IdpScenario.T1_OBSERVED;
 
         assertViolation(
-                ViolationCode.INVALID_CORRELATION_VALUE, () -> IdpScenario.observation(IdpScenario.T1, seen, 1, " "));
-        assertViolation(
-                ViolationCode.INVALID_CORRELATION_VALUE, () -> IdpScenario.observation(null, seen, 1, "as-777"));
+                ViolationCode.INVALID_CORRELATION_VALUE,
+                () -> IdpScenario.observation(IdpScenario.T1, seen, IdpScenario.SESSION_KEY_ID, " "));
         assertViolation(
                 ViolationCode.INVALID_CORRELATION_VALUE,
-                () -> IdpScenario.observation(IdpScenario.T1, null, 1, "as-777"));
+                () -> IdpScenario.observation(null, seen, IdpScenario.SESSION_KEY_ID, "as-777"));
+        assertViolation(
+                ViolationCode.INVALID_CORRELATION_VALUE,
+                () -> IdpScenario.observation(IdpScenario.T1, null, IdpScenario.SESSION_KEY_ID, "as-777"));
+        assertViolation(
+                ViolationCode.INVALID_CORRELATION_VALUE,
+                () -> IdpScenario.observation(IdpScenario.T1, seen, null, "as-777"));
+        assertViolation(
+                ViolationCode.INVALID_CORRELATION_VALUE,
+                () -> new CorrelationObservation(seen, null, IdpScenario.SESSION_KEY_ID, "as-777", IdpScenario.T1));
     }
 
     private static BusinessOperationDefinition definition(
             String name, Duration mergeWindow, List<CorrelationKey> keys, OutcomeRule outcomeRule) {
-        return new BusinessOperationDefinition(1, name, mergeWindow, keys, outcomeRule);
+        return new BusinessOperationDefinition(IdpScenario.DEFINITION_ID, name, mergeWindow, keys, outcomeRule);
     }
 }

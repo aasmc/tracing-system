@@ -42,10 +42,10 @@ public record LinkingInput(
         newObservations = List.copyOf(newObservations);
         earlierObservations = List.copyOf(earlierObservations);
         currentOperationByValue = Map.copyOf(currentOperationByValue);
-        Set<Integer> keyIds = definition.keys().stream().map(CorrelationKey::id).collect(Collectors.toSet());
+        Set<UUID> keyIds = definition.keys().stream().map(CorrelationKey::id).collect(Collectors.toSet());
         Stream.concat(newObservations.stream(), earlierObservations.stream())
                 .forEach(observation -> require(
-                        observation.operationDefinitionId() == definition.id()
+                        definition.id().equals(observation.operationDefinitionId())
                                 && keyIds.contains(observation.correlationKeyId()),
                         ViolationCode.INVALID_OPERATION_DEFINITION,
                         "observation of key " + observation.correlationKeyId() + " is not of definition "
@@ -53,7 +53,7 @@ public record LinkingInput(
         Map<UUID, BusinessOperation> operationById = new HashMap<>();
         for (BusinessOperation operation : currentOperationByValue.values()) {
             require(
-                    operation.mergedInto() == null && operation.operationDefinitionId() == definition.id(),
+                    operation.mergedInto() == null && definition.id().equals(operation.operationDefinitionId()),
                     ViolationCode.INVALID_BUSINESS_OPERATION,
                     "operation " + operation.id() + " is merged or not of definition " + definition.name());
             BusinessOperation sameId = operationById.putIfAbsent(operation.id(), operation);

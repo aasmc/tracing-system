@@ -6,6 +6,7 @@ import static ru.aasmc.tracing.collector.testmodel.domain.IdpScenario.payloadMap
 import static ru.aasmc.tracing.collector.testmodel.domain.Violations.assertViolation;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,11 @@ import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeType;
 
 class EnrichmentLimitsTest {
+
+    private static final EnrichmentSourceId SOURCE_ID =
+            new EnrichmentSourceId(UUID.fromString("00000000-0000-0000-0000-00000000e001"));
+    private static final KafkaConnectionId CONNECTION_ID =
+            new KafkaConnectionId(UUID.fromString("00000000-0000-0000-0000-00000000f001"));
 
     private static final EnrichmentLimits DEFAULTS = EnrichmentLimits.DEFAULT;
 
@@ -69,8 +75,7 @@ class EnrichmentLimitsTest {
     }
 
     private static EnrichmentSource sourceNamed(String name) {
-        return new EnrichmentSource(
-                new EnrichmentSourceId(1), name, new KafkaConnectionId(1), "sms.reports", SourceStatus.DRAFT);
+        return new EnrichmentSource(SOURCE_ID, name, CONNECTION_ID, "sms.reports", SourceStatus.DRAFT);
     }
 
     private static List<FieldMapping> mappings(int count) {

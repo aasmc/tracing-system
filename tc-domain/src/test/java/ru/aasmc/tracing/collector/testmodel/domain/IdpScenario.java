@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeKey;
 import ru.aasmc.tracing.collector.domain.attribute.AttributeType;
 import ru.aasmc.tracing.collector.domain.correlation.BusinessOperationDefinition;
@@ -59,8 +60,9 @@ public final class IdpScenario {
     public static final String CODE = "code-abc";
     public static final String STEP_AUTHENTICATION = "authentication";
     public static final String STEP_TOKEN_EXCHANGE = "token-exchange";
-    public static final int SESSION_KEY_ID = 1;
-    public static final int CODE_KEY_ID = 2;
+    public static final UUID DEFINITION_ID = UUID.fromString("00000000-0000-0000-0000-00000000d001");
+    public static final UUID SESSION_KEY_ID = UUID.fromString("00000000-0000-0000-0000-00000000c001");
+    public static final UUID CODE_KEY_ID = UUID.fromString("00000000-0000-0000-0000-00000000c002");
 
     /** When each trace's correlation values were seen. */
     public static final Instant T1_OBSERVED = Instant.parse("2026-11-21T09:15:02.130Z");
@@ -113,7 +115,7 @@ public final class IdpScenario {
     /** {@code idp.login}: primary key session id, alias key authorization code; complete once tokens are issued. */
     public static BusinessOperationDefinition operationDefinition() {
         return new BusinessOperationDefinition(
-                1,
+                DEFINITION_ID,
                 "idp.login",
                 Duration.ofDays(1),
                 List.of(
@@ -146,8 +148,8 @@ public final class IdpScenario {
         throw new IllegalArgumentException("not an IdP trace");
     }
 
-    public static CorrelationObservation observation(TraceId trace, Instant seen, int keyId, String value) {
-        return new CorrelationObservation(seen, 1, keyId, value, trace);
+    public static CorrelationObservation observation(TraceId trace, Instant seen, UUID keyId, String value) {
+        return new CorrelationObservation(seen, DEFINITION_ID, keyId, value, trace);
     }
 
     /** The three traces as outcome evaluation sees them: no errors, labelled by the keys that linked them. */

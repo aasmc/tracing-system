@@ -1249,13 +1249,13 @@ sequenceDiagram
     ADM->>UI: Indexed attributes: user_id, Retain in digest, transform SHA256
     UI->>CP: PATCH /api/v1/admin/indexed-attributes/7 {retainInDigest true, digestTransform SHA256}
     CP->>CP: user_id is PERSONAL: SHA256 ok (NONE would warn, SECRET with NONE is refused)
-    CP->>PG: UPDATE indexed_attribute SET retain_in_digest = true, digest_transform = 'SHA256'
+    CP->>PG: UPDATE indexed_attribute SET retained_in_digest = true, digest_transform = 'SHA256'
     CP->>PG: UPDATE config_revision +1, COMMIT
     CP->>AUD: audit (key user_id, retain SHA256)
     CP-->>UI: 200 retainInDigest true
     ADM->>UI: Retain idp.auth_session_id (not indexed yet)
     UI->>CP: POST /api/v1/admin/indexed-attributes {key idp.auth_session_id, retainInDigest true, backfillWindow P7D}
-    CP->>PG: INSERT attribute_key, INSERT indexed_attribute (BACKFILLING, retain_in_digest true), config_revision +1
+    CP->>PG: INSERT attribute_key, INSERT indexed_attribute (BACKFILLING, retained_in_digest true), config_revision +1
     CP-->>UI: 201 BACKFILLING (backfill as SD-09)
 
     ADM->>UI: Business operation definition idp.login, outcome rule finalStepLabel token-exchange
